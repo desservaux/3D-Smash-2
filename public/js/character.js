@@ -6,7 +6,7 @@ const Character = {
     mesh: null,
     body: null,
     model: null,
-    
+
     // Character parts for animation
     parts: {
         head: null,
@@ -21,730 +21,671 @@ const Character = {
         rightLegGroup: null,
         fpArms: null // First-person arms
     },
-    
+
     // Character properties
-    moveSpeed: 36, // Reduced from 48 to 36
-    jumpForce: 12,
+    moveSpeed: 5, // More realistic walking speed
+    jumpForce: 8, // Adjusted jump force
     canJump: true,
-    canDoubleJump: true,
-    doubleJumpCooldown: 0,
+    // canDoubleJump: true, // Let's disable double jump for now for simplicity
+    // doubleJumpCooldown: 0,
     isOnGround: false,
     knockbackMultiplier: 1.0,
     lastDirection: new THREE.Vector3(),
-    moveSmoothing: 0.7, // Reduced from 0.8 to 0.7 for smoother movement
+    moveSmoothing: 0.2, // Lower for quicker response
     isFirstPerson: true, // Flag for first-person mode
-    
+
     // Animation properties
-    animationSpeed: 12, // Reduced from 16 to 12 for slower animations
+    animationSpeed: 8, // Slower walk animation
     animationTime: 0,
     isMoving: false,
-    
+
     // Punch animation properties
     isPunching: false,
     punchAnimationTime: 0,
     punchDuration: 0.3, // Duration in seconds
     punchCooldown: 0,
-    
+
     // Physics reference
     physicsWorld: null,
-    
+    // REMOVED: Incorrect Raycaster/Ray initialization for CANNON 0.6.2
+    // raycaster: new CANNON.Raycaster(),
+    // groundCheckRay: new CANNON.Ray(),
+
     // Create character mesh and physics body
     create: function(scene, world, spawnPosition) {
-        // Store reference to the physics world
         this.physicsWorld = world;
-        
-        // Create character model (simple blocky humanoid)
+
         this.createModel(scene);
-        
-        // Set initial position
-        this.model.position.copy(spawnPosition);
-        
-        // Create physics body - adjusted to better match the visual model
-        const characterShape = new CANNON.Box(new CANNON.Vec3(0.4, 0.9, 0.4));
+        if (this.model) { // Check if model was created successfully
+            this.model.position.copy(spawnPosition);
+        } else {
+            console.error("Character model failed to create!");
+            return null; // Indicate failure
+        }
+
+
+        // Create physics body - Capsule might be better but Box is simpler for now
+        // Use a slightly smaller box than the visual model to avoid snagging
+        const characterShape = new CANNON.Box(new CANNON.Vec3(0.3, 0.8, 0.3)); // Width, Height, Depth / 2
+        const characterMaterial = new CANNON.Material('character');
+        characterMaterial.friction = 0.1; // Low friction against walls
+        characterMaterial.restitution = 0.0; // No bounce
+
         this.body = new CANNON.Body({
-            mass: 5,
-            material: new CANNON.Material('character'),
+            mass: 70, // Realistic mass (kg)
+            material: characterMaterial,
+            fixedRotation: true, // Prevent tumbling
+            linearDamping: 0.9 // High damping simulates air resistance/friction - stops sliding
         });
-        
-        this.body.addShape(characterShape);
-        
-        // Position the body so that the bottom of the collision box aligns with the ground at y=0
-        this.body.position.set(spawnPosition.x, spawnPosition.y + 0.25, spawnPosition.z);
-        this.body.linearDamping = 0.2; // Reduced for less friction/drag
-        this.body.fixedRotation = true; // Prevent character from rotating
-        this.body.updateMassProperties(); // Make sure mass is distributed correctly
-        
-        // Add body to world
-        world.addBody(this.body);
-        
-        // Set up collision detection for jumping
-        this.setupCollisionDetection(world);
-        
-        // Ensure character starts on ground
-        this.isOnGround = true;
-        this.canJump = true;
-        this.canDoubleJump = true;
-        
-        return this.model;
+        if (!this.body) {
+             console.error("Failed to create Cannon.Body!");
+             return null;
+        }
+
+        // Offset the shape vertically so the body origin is at the feet
+        this.body.addShape(characterShape, new CANNON.Vec3(0, 0.8, 0)); // Offset shape by its half-height
+
+        this.body.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
+        this.body.updateMassProperties();
+
+        // Ensure world exists before adding body
+        if (world) {
+           world.addBody(this.body);
+        } else {
+           console.error("Physics world not provided to Character.create!");
+        }
+
+
+        this.isOnGround = false; // Start assuming not on ground
+        this.canJump = false;
+
+        console.log("Character created at:", spawnPosition);
+        return this.model; // Return the Three.js model group
     },
-    
-    // Create character model with head, body, arms, and legs
+
     createModel: function(scene) {
         this.model = new THREE.Group();
-        
-        const characterMaterial = new THREE.MeshStandardMaterial({ 
-            map: TextureManager.get('character')
+        if (!scene) {
+             console.error("Scene not provided to Character.createModel!");
+             return; // Cannot proceed
+        }
+
+        const characterTexture = TextureManager.get('character');
+        if (!characterTexture) {
+            console.warn("Character texture not found, using basic material.");
+        }
+        const characterMaterial = new THREE.MeshStandardMaterial({
+            map: characterTexture || null, // Use texture or fallback
+            color: characterTexture ? 0xffffff : 0xcccccc // Use white with texture, gray otherwise
         });
-        
-        // Head (slightly larger than a normal block for visibility)
+
+
+        // Head
         const headGeometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
         this.parts.head = new THREE.Mesh(headGeometry, characterMaterial);
-        this.parts.head.position.set(0, 0.8, 0);
+        this.parts.head.position.set(0, 1.55, 0); // Position relative to model origin (feet)
         this.parts.head.castShadow = true;
-        
-        // In first-person mode, set head to invisible
-        if (this.isFirstPerson) {
-            this.parts.head.visible = false;
-        }
-        
+
         // Body
         const bodyGeometry = new THREE.BoxGeometry(0.5, 0.6, 0.3);
         this.parts.torso = new THREE.Mesh(bodyGeometry, characterMaterial);
-        this.parts.torso.position.set(0, 0.3, 0);
+        this.parts.torso.position.set(0, 1.0, 0); // Centered above origin
         this.parts.torso.castShadow = true;
-        
-        // Arms - Create with proper pivot points
+
+        // Arms - Pivoted correctly
         const armGeometry = new THREE.BoxGeometry(0.2, 0.6, 0.2);
-        
-        // For left arm, create a group to manage the pivot point
         this.parts.leftArmGroup = new THREE.Group();
         this.parts.leftArm = new THREE.Mesh(armGeometry, characterMaterial);
-        
-        // Position the mesh lower in the group, so pivot is at shoulder
-        this.parts.leftArm.position.set(0, -0.3, 0);
+        this.parts.leftArm.position.set(0, -0.3, 0); // Pivot at top
         this.parts.leftArm.castShadow = true;
-        
-        // Add mesh to group and position group at shoulder
         this.parts.leftArmGroup.add(this.parts.leftArm);
-        this.parts.leftArmGroup.position.set(-0.35, 0.6, 0);
-        
-        // Right arm - same approach
+        this.parts.leftArmGroup.position.set(-0.35, 1.3, 0); // Shoulder position
+        this.model.add(this.parts.leftArmGroup);
+
         this.parts.rightArmGroup = new THREE.Group();
         this.parts.rightArm = new THREE.Mesh(armGeometry, characterMaterial);
-        this.parts.rightArm.position.set(0, -0.3, 0);
+        this.parts.rightArm.position.set(0, -0.3, 0); // Pivot at top
         this.parts.rightArm.castShadow = true;
-        
         this.parts.rightArmGroup.add(this.parts.rightArm);
-        this.parts.rightArmGroup.position.set(0.35, 0.6, 0);
-        
-        // Legs - Create with proper pivot points
+        this.parts.rightArmGroup.position.set(0.35, 1.3, 0); // Shoulder position
+        this.model.add(this.parts.rightArmGroup);
+
+        // Legs - Pivoted correctly
         const legGeometry = new THREE.BoxGeometry(0.2, 0.6, 0.2);
-        
-        // Left leg group
         this.parts.leftLegGroup = new THREE.Group();
         this.parts.leftLeg = new THREE.Mesh(legGeometry, characterMaterial);
-        this.parts.leftLeg.position.set(0, -0.3, 0);
+        this.parts.leftLeg.position.set(0, -0.3, 0); // Pivot at top
         this.parts.leftLeg.castShadow = true;
-        
         this.parts.leftLegGroup.add(this.parts.leftLeg);
-        this.parts.leftLegGroup.position.set(-0.15, 0, 0);
-        
-        // Right leg group
+        this.parts.leftLegGroup.position.set(-0.15, 0.7, 0); // Hip position
+        this.model.add(this.parts.leftLegGroup);
+
         this.parts.rightLegGroup = new THREE.Group();
         this.parts.rightLeg = new THREE.Mesh(legGeometry, characterMaterial);
-        this.parts.rightLeg.position.set(0, -0.3, 0);
+        this.parts.rightLeg.position.set(0, -0.3, 0); // Pivot at top
         this.parts.rightLeg.castShadow = true;
-        
         this.parts.rightLegGroup.add(this.parts.rightLeg);
-        this.parts.rightLegGroup.position.set(0.15, 0, 0);
-        
-        // Create first-person arms
-        this.createFirstPersonArms(scene);
-        
-        // Add all parts to the model
-        this.model.add(this.parts.head);
-        this.model.add(this.parts.torso);
-        this.model.add(this.parts.leftArmGroup);
-        this.model.add(this.parts.rightArmGroup);
-        this.model.add(this.parts.leftLegGroup);
+        this.parts.rightLegGroup.position.set(0.15, 0.7, 0); // Hip position
         this.model.add(this.parts.rightLegGroup);
-        
-        // Verify all parts are added correctly
-        console.log("Character model created with parts:", 
+
+
+        // Add torso and head AFTER limbs so they render correctly if overlapping slightly
+        this.model.add(this.parts.torso);
+        this.model.add(this.parts.head);
+
+
+        // Create first-person arms (attached to camera later)
+        this.createFirstPersonArms(scene);
+
+        scene.add(this.model);
+
+        // Initial visibility update
+        this.updateVisibility();
+
+        console.log("Character model created with parts:",
             "leftArmGroup exists:", !!this.parts.leftArmGroup,
             "rightArmGroup exists:", !!this.parts.rightArmGroup,
             "leftLegGroup exists:", !!this.parts.leftLegGroup,
             "rightLegGroup exists:", !!this.parts.rightLegGroup
         );
-        
-        // Test rotation on parts to ensure they work
-        this.parts.leftArmGroup.rotation.x = 0.5;
-        this.parts.rightArmGroup.rotation.x = -0.5;
-        this.parts.leftLegGroup.rotation.x = -0.3;
-        this.parts.rightLegGroup.rotation.x = 0.3;
-        
-        // Reset after 1 second to verify rotation is working
-        setTimeout(() => {
-            this.resetLegPositions();
-            console.log("Reset limb positions after test");
-        }, 1000);
-        
-        // Center the model so bottom of feet is at y=0
-        this.model.position.y = 0;
-        
-        scene.add(this.model);
     },
-    
-    // Set up collision detection
-    setupCollisionDetection: function(world) {
-        this.body.addEventListener('collide', (event) => {
-            // Check if collision is with the ground
-            const contact = event.contact;
-            
-            // If the character's feet are touching something
-            if (contact.bi.id === this.body.id) {
-                const contactNormal = new CANNON.Vec3();
-                contact.ni.negate(contactNormal);
-                
-                // Log contact normal for debugging
-                console.log("Collision detected - contactNormal.y:", contactNormal.y);
-                
-                // If the contact normal is pointing up, character is on ground
-                // Lower threshold even further from 0.1 to 0.01 to detect almost any upward contact
-                if (contactNormal.y > 0.01) {
-                    console.log("Ground contact detected - setting isOnGround to true");
-                    this.isOnGround = true;
-                    // Jump abilities are reset in update function when landing
-                }
-            }
-        });
-    },
-    
-    // Move character based on input
-    move: function(direction, deltaTime) {
-        console.log("Move called - direction:", direction.x, direction.z, "length:", direction.length());
-        
-        // If no direction, stop moving
-        if (direction.length() === 0) {
-            // Apply additional friction when not trying to move
-            this.body.velocity.x *= 0.8;
-            this.body.velocity.z *= 0.8;
-            this.isMoving = false;
+
+    checkGround: function() {
+        // Safety check: ensure body and physics world are available
+        if (!this.body || !this.physicsWorld) {
+            // console.warn("checkGround called too early or physics world missing.");
+            this.isOnGround = false; // Assume not grounded if check cannot be performed
+            this.canJump = false;
             return;
         }
-        
-        // Character is moving
-        this.isMoving = true;
-        console.log("Character is now moving, isMoving set to true");
-        
-        // In first-person mode, we don't need to update lastDirection since
-        // the character rotation is set directly from camera rotation
-        if (!this.isFirstPerson && direction.length() > 0.1) {
+
+        const start = this.body.position;
+        // Ray starts slightly below the body center (at feet level + offset) and goes down
+        const rayVerticalOffset = 0.1; // How much below the body origin (feet) to start the ray
+        const rayCheckDistance = 0.2;  // How far down to check from the start point (needs to be > offset)
+
+        // Ensure ray starts slightly above ground for checks
+        const rayFrom = new CANNON.Vec3(start.x, start.y + rayVerticalOffset, start.z);
+        const rayTo = new CANNON.Vec3(start.x, start.y - rayCheckDistance, start.z);
+
+        // Use a reusable result object if desired, or create new one
+        const result = new CANNON.RaycastResult();
+        result.reset();
+
+        // Collision filter options (important to avoid hitting self)
+        const options = {
+             // collisionFilterGroup: 1, // Assuming character is group 1 - Optional: define groups/masks if needed
+             collisionFilterMask: -1,  // Check against everything
+             skipBackfaces: true      // Don't detect hits from inside objects
+        };
+
+        // Perform the raycast using the world method
+        const hasHit = this.physicsWorld.raycastClosest(rayFrom, rayTo, options, result);
+
+        // Check if the hit is valid ground
+        const groundNormalThreshold = 0.7; // How steep a slope counts as ground
+        let onValidGround = false;
+
+        if (hasHit) {
+            // Optional: Check if the hit body is NOT the character itself
+            // This check might be needed depending on CANNON version and setup.
+            // if (result.body !== this.body) { // Example check
+                 if (result.hitNormalWorld.y >= groundNormalThreshold) {
+                      onValidGround = true;
+                 }
+            // }
+        }
+
+
+        if (onValidGround) {
+             if (!this.isOnGround) {
+                 // console.log("Ground contact detected by raycast");
+             }
+             this.isOnGround = true;
+             this.canJump = true; // Allow jumping when grounded
+        } else {
+            if (this.isOnGround) {
+                // console.log("Left ground");
+            }
+            this.isOnGround = false;
+            this.canJump = false;
+        }
+        // Optional Debug Ray
+        // this.drawDebugRay(rayFrom, rayTo, onValidGround ? 0x00ff00 : 0xff0000); // Green=ground, Red=air
+    },
+
+    // Helper to visualize the raycast
+    drawDebugRay: function(start, end, color) {
+        // Ensure Game and Game.scene are available
+        if (!window.Game || !window.Game.scene) return;
+
+        if (!this.debugLine) {
+            const material = new THREE.LineBasicMaterial({ color: color, depthTest: false, depthWrite: false }); // Disable depth test to see it always
+            const geometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(), new THREE.Vector3()
+            ]);
+            this.debugLine = new THREE.Line(geometry, material);
+            this.debugLine.renderOrder = 999; // Render on top
+            Game.scene.add(this.debugLine);
+        }
+        this.debugLine.material.color.setHex(color);
+        this.debugLine.geometry.attributes.position.setXYZ(0, start.x, start.y, start.z);
+        this.debugLine.geometry.attributes.position.setXYZ(1, end.x, end.y, end.z);
+        this.debugLine.geometry.attributes.position.needsUpdate = true;
+    },
+
+
+    move: function(direction, deltaTime) {
+        if (!this.body) return; // Safety check
+
+        this.isMoving = direction.lengthSq() > 0.01; // Use squared length for efficiency
+
+        if (!this.isMoving) {
+             // Apply damping manually when not moving for snappier stops on ground
+            if (this.isOnGround) {
+                // Gradually reduce velocity instead of instant stop for smoother feel
+                 const stopFactor = Math.pow(0.1, deltaTime * 10); // Adjust multiplier for faster/slower stop
+                 this.body.velocity.x *= stopFactor;
+                 this.body.velocity.z *= stopFactor;
+
+                 // Clamp velocity to zero if very small
+                 if (Math.abs(this.body.velocity.x) < 0.01) this.body.velocity.x = 0;
+                 if (Math.abs(this.body.velocity.z) < 0.01) this.body.velocity.z = 0;
+
+            }
+             // Keep existing linear damping for air control stops
+            return;
+        }
+
+        // Apply force based movement - feels more physical
+        const currentVelocity = this.body.velocity;
+        const targetVelocity = direction.clone().scale(this.moveSpeed); // Use clone
+
+        // Calculate force needed to reach target velocity
+        // Use different acceleration based on ground state
+        const accel = this.isOnGround ? 200.0 : 50.0; // Higher accel on ground, lower in air
+        let force = new CANNON.Vec3(); // Create new Vec3 for force calculation
+        targetVelocity.vsub(currentVelocity, force); // Vector subtraction: target - current -> stored in 'force'
+        force.y = 0; // No vertical force from movement input
+
+        // Limit force magnitude to the acceleration value
+        const maxForceMagnitude = accel;
+        if (force.lengthSquared() > maxForceMagnitude * maxForceMagnitude) {
+            force.normalize();
+            force.scale(maxForceMagnitude, force); // Scale normalized force by accel magnitude
+        }
+
+        // Apply force (scaled by body mass implicitly by Cannon, force is in Newtons)
+        // ApplyForce expects force in Newtons (mass * acceleration)
+        this.body.applyForce(force.scale(this.body.mass), this.body.position);
+
+        // Update last direction for third-person model rotation
+        if (!this.isFirstPerson) {
             this.lastDirection.copy(direction);
         }
-        
-        // Calculate target velocity
-        const speed = this.moveSpeed;
-        const targetVelocity = {
-            x: direction.x * speed,
-            z: direction.z * speed
-        };
-        
-        // Apply different movement based on ground state
-        if (this.isOnGround) {
-            // On ground: Blend between current and target velocity for smooth movement
-            // with higher priority to the target direction
-            this.body.velocity.x = Utils.lerp(
-                this.body.velocity.x, 
-                targetVelocity.x, 
-                this.moveSmoothing
-            );
-            
-            this.body.velocity.z = Utils.lerp(
-                this.body.velocity.z, 
-                targetVelocity.z, 
-                this.moveSmoothing
-            );
-            
-            // Apply a small upward force to overcome any small bumps
-            if (this.body.velocity.y < 0.1) {
-                this.body.velocity.y = 0;
-            }
-        } else {
-            // In air: Allow some air control but more limited
-            const airControlFactor = 0.3;
-            
-            this.body.velocity.x = Utils.lerp(
-                this.body.velocity.x, 
-                targetVelocity.x, 
-                airControlFactor
-            );
-            
-            this.body.velocity.z = Utils.lerp(
-                this.body.velocity.z, 
-                targetVelocity.z, 
-                airControlFactor
-            );
-        }
     },
-    
-    // Make character jump
+
+
     jump: function() {
-        console.log("Jump function called with states - isOnGround:", this.isOnGround, 
-                   "canJump:", this.canJump, "canDoubleJump:", this.canDoubleJump);
-        
-        // SIMPLIFIED JUMP APPROACH: Direct velocity setting instead of impulses
-        
-        // First jump - only allowed when on ground
+         if (!this.body) return false; // Safety check
+
         if (this.canJump && this.isOnGround) {
-            // Apply direct velocity for more reliable jumping
-            this.body.velocity.y = this.jumpForce;
-            
-            this.canJump = false;
-            this.isOnGround = false;
-            
-            // Reset leg positions when jumping
-            this.resetLegPositions();
-            
-            console.log("First jump executed - Set velocity directly to:", this.jumpForce);
-            return true; // Successfully jumped
-        } 
-        // Double jump - only allowed when in air and canDoubleJump is true
-        else if (this.canDoubleJump && !this.isOnGround) {
-            // Apply the second jump with slightly less force
-            this.body.velocity.y = this.jumpForce * 0.8;
-            
-            this.canDoubleJump = false;
-            this.doubleJumpCooldown = 2; // 2 seconds cooldown
-            
-            console.log("Double jump executed - Set velocity directly to:", this.jumpForce * 0.8);
-            return true; // Successfully jumped
-        } else {
-            // Log why the jump didn't happen
-            if (!this.isOnGround && this.canJump) {
-                console.log("Jump failed: Can't use first jump while in air");
-            } else if (this.isOnGround && !this.canJump) {
-                console.log("Jump failed: First jump on cooldown");
-            } else if (!this.isOnGround && !this.canDoubleJump) {
-                console.log("Jump failed: Double jump on cooldown");
-            } else {
-                console.log("Jump failed: Unknown reason");
-            }
-            return false; // Failed to jump
+            // Apply an instantaneous upward velocity change
+            this.body.velocity.y = this.jumpForce; // Directly set y velocity
+            this.canJump = false; // Prevent immediate re-jump
+            this.isOnGround = false; // We are now airborne
+            console.log("Jump executed! Velocity Y set to:", this.jumpForce);
+            // Reset leg positions slightly later via animation update
+            return true;
+        }
+         else {
+            console.log("Jump failed - canJump:", this.canJump, "isOnGround:", this.isOnGround);
+            return false;
         }
     },
-    
-    // Apply knockback to a target (for testing with a dummy object)
+
+    // Apply knockback
     applyKnockback: function(target) {
-        if (!target || !target.body) return;
-        
-        // Calculate direction from character to target
-        const direction = new CANNON.Vec3();
-        direction.copy(target.body.position);
-        direction.vsub(this.body.position, direction);
-        direction.normalize();
-        
-        // Apply upward component to knockback
-        direction.y = 0.5;
-        
-        // Calculate knockback force based on multiplier
-        const force = 20 * this.knockbackMultiplier;
-        
-        // Apply impulse to target
-        const impulse = new CANNON.Vec3(
-            direction.x * force, 
-            direction.y * force, 
-            direction.z * force
-        );
-        
-        target.body.applyImpulse(impulse, target.body.position);
-        
-        // Increase knockback multiplier for next hit
-        this.knockbackMultiplier += 0.2;
-        
-        console.log('Knockback applied with multiplier:', this.knockbackMultiplier);
+         if (!target || !target.body || !this.body) return; // Safety checks
+         const direction = new CANNON.Vec3();
+         target.body.position.vsub(this.body.position, direction); // target - player
+         direction.normalize();
+         direction.y = 0.5; // Add upward component
+         direction.normalize(); // Renormalize
+
+         const baseForce = 50; // Base knockback force
+         const scaleFactor = 1.0; // Could scale based on target mass or other factors later
+         const impulseMagnitude = baseForce * this.knockbackMultiplier * scaleFactor;
+         const impulse = direction.scale(impulseMagnitude);
+
+         target.body.applyImpulse(impulse, target.body.position);
+         this.knockbackMultiplier += 0.2;
+         console.log('Knockback applied. New multiplier:', this.knockbackMultiplier.toFixed(1));
     },
-    
-    // Start punch animation
+
     startPunchAnimation: function() {
         if (this.punchCooldown <= 0) {
             this.isPunching = true;
             this.punchAnimationTime = 0;
-            this.punchCooldown = 0.5; // Set cooldown in seconds to prevent punch spam
-            console.log("Starting punch animation");
+            this.punchCooldown = 0.5; // Cooldown in seconds
+            // console.log("Starting punch animation");
         }
     },
-    
+
     // Animate punching motion
     animatePunch: function(deltaTime) {
-        if (!this.isPunching) return;
-        
-        // Update punch animation time
+        if (!this.isPunching || !this.parts.rightArmGroup) return;
+
         this.punchAnimationTime += deltaTime;
-        
-        // Calculate punch progress (0 to 1)
         const progress = Math.min(this.punchAnimationTime / this.punchDuration, 1);
-        
-        // First half of animation: punch forward
+
+        let punchAngle;
+        // Use easing function for smoother punch (e.g., easeOutQuad)
+        const easeOutQuad = t => t * (2 - t);
+        const easedProgress = easeOutQuad(progress);
+
         if (progress < 0.5) {
-            // Map 0-0.5 to 0-1
+            // Forward motion (0 -> 0.5 progress maps to 0 -> 1 eased)
             const forwardProgress = progress * 2;
-            // Start at 0, move to -1.5 (forward punch)
-            const punchAngle = -1.5 * forwardProgress;
-            this.parts.rightArmGroup.rotation.x = punchAngle;
-        } 
-        // Second half of animation: return to position
-        else {
-            // Map 0.5-1 to 1-0
+            punchAngle = Utils.lerp(0, -Math.PI / 1.8, easeOutQuad(forwardProgress)); // Punch further
+        } else {
+            // Return motion (0.5 -> 1 progress maps to 0 -> 1 eased, reversed)
             const returnProgress = (progress - 0.5) * 2;
-            // Start at -1.5, move back to 0
-            const punchAngle = -1.5 * (1 - returnProgress);
-            this.parts.rightArmGroup.rotation.x = punchAngle;
+            punchAngle = Utils.lerp(-Math.PI / 1.8, 0, easeOutQuad(returnProgress));
         }
-        
-        // End animation when complete
+        this.parts.rightArmGroup.rotation.x = punchAngle;
+
+        // Also animate FP arm if visible
+        if (this.isFirstPerson && this.parts.fpRightArm) {
+             const baseFPArmAngle = 0.1;
+             this.parts.fpRightArm.rotation.x = punchAngle + baseFPArmAngle; // Add base angle back
+        }
+
+
         if (progress >= 1) {
             this.isPunching = false;
-            console.log("Punch animation completed");
+             // Ensure FP arm returns to base angle
+            if (this.isFirstPerson && this.parts.fpRightArm) {
+                 this.parts.fpRightArm.rotation.x = 0.1; // Reset to base angle
+            }
+            // console.log("Punch animation completed");
         }
     },
-    
-    // Reset character position when falling off the island
+
     reset: function(spawnPosition) {
-        this.body.position.set(spawnPosition.x, spawnPosition.y + 0.25, spawnPosition.z);
+         if (!this.body || !spawnPosition) return; // Safety check
+
+        this.body.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
         this.body.velocity.set(0, 0, 0);
         this.body.angularVelocity.set(0, 0, 0);
         this.knockbackMultiplier = 1.0;
-        this.isOnGround = true;
-        this.canJump = true;
-        this.canDoubleJump = true;
-        this.doubleJumpCooldown = 0;
+        this.isOnGround = false; // Will be checked next frame
+        this.canJump = false;
+        this.isPunching = false; // Stop punching on reset
+        this.punchAnimationTime = 0;
         this.resetLegPositions();
+        console.log("Character reset to:", spawnPosition);
     },
-    
-    // Reset leg positions to default
+
     resetLegPositions: function() {
-        if (this.parts.leftLegGroup) {
-            this.parts.leftLegGroup.rotation.x = 0;
-            this.parts.rightLegGroup.rotation.x = 0;
-            this.parts.leftArmGroup.rotation.x = 0;
-            this.parts.rightArmGroup.rotation.x = 0;
+        // Smoothly reset positions instead of instantly? Lerp towards 0.
+        const lerpFactor = 0.5; // Adjust speed of reset lerp
+        if (this.parts.leftLegGroup) this.parts.leftLegGroup.rotation.x = Utils.lerp(this.parts.leftLegGroup.rotation.x, 0, lerpFactor);
+        if (this.parts.rightLegGroup) this.parts.rightLegGroup.rotation.x = Utils.lerp(this.parts.rightLegGroup.rotation.x, 0, lerpFactor);
+        if (this.parts.leftArmGroup) this.parts.leftArmGroup.rotation.x = Utils.lerp(this.parts.leftArmGroup.rotation.x, 0, lerpFactor);
+        // Only reset right arm if not punching
+        if (this.parts.rightArmGroup && !this.isPunching) {
+             this.parts.rightArmGroup.rotation.x = Utils.lerp(this.parts.rightArmGroup.rotation.x, 0, lerpFactor);
         }
     },
-    
-    // Animate the character's walking motion
+
     animateWalking: function(deltaTime) {
-        console.log("AnimateWalking - isOnGround:", this.isOnGround, "isMoving:", this.isMoving);
-        
-        // Verify all limb groups exist before trying to animate
-        if (!this.parts.leftArmGroup || !this.parts.rightArmGroup || 
+        // Check required parts
+        if (!this.parts.leftArmGroup || !this.parts.rightArmGroup ||
             !this.parts.leftLegGroup || !this.parts.rightLegGroup) {
-            console.error("Cannot animate walking - limb groups not found!");
-            return;
+            return; // Silently return if parts missing
         }
-        
-        if (!this.isOnGround) {
-            // In air, show "falling" pose with arms out slightly
-            this.parts.leftArmGroup.rotation.x = -0.2; // Reduced from -0.3
-            this.parts.rightArmGroup.rotation.x = -0.2; // Reduced from -0.3
-            this.parts.leftLegGroup.rotation.x = 0.15; // Reduced from 0.2
-            this.parts.rightLegGroup.rotation.x = -0.15; // Reduced from -0.2
-            return;
-        }
-        
-        if (this.isMoving) {
-            // Update animation time
-            this.animationTime += deltaTime * this.animationSpeed;
-            
-            // Calculate leg and arm swing with more pronounced movement
-            const legSwing = Math.sin(this.animationTime) * 1.5; // Reduced from 2.5 to 1.5
-            console.log("Walking animation - legSwing:", legSwing, "animationTime:", this.animationTime);
-            
-            // Apply rotation to leg and arm GROUPS (not meshes directly)
-            // Use direct assignment instead of adding/multiplying
-            this.parts.leftLegGroup.rotation.x = legSwing;
-            this.parts.rightLegGroup.rotation.x = -legSwing;
-            this.parts.leftArmGroup.rotation.x = -legSwing;
-            this.parts.rightArmGroup.rotation.x = legSwing;
-            
-            // Add some subtle side-to-side body movement
-            this.parts.torso.rotation.z = Math.sin(this.animationTime) * 0.03; // Reduced from 0.05
-            this.parts.head.rotation.z = Math.sin(this.animationTime) * 0.01; // Reduced from 0.02
-            this.parts.head.rotation.y = Math.sin(this.animationTime * 0.5) * 0.07; // Reduced from 0.1
-            
-            // Log the current rotation values to verify they're changing
-            console.log("Limb rotations:", 
-                "leftLeg:", this.parts.leftLegGroup.rotation.x,
-                "rightLeg:", this.parts.rightLegGroup.rotation.x,
-                "leftArm:", this.parts.leftArmGroup.rotation.x,
-                "rightArm:", this.parts.rightArmGroup.rotation.x
-            );
+
+        const lerpFactor = deltaTime * 10; // Speed of returning to neutral / moving towards target pose
+
+        if (this.isOnGround) {
+            if (this.isMoving) {
+                // Use global time for consistency in animation speed regardless of frame rate fluctuations
+                 const walkTime = (Game.lastTime || performance.now()) / 1000;
+                 const swingSpeed = this.animationSpeed; // Use defined speed
+                 const swingAngle = Math.sin(walkTime * swingSpeed) * 0.7; // Max swing angle
+
+                this.parts.leftLegGroup.rotation.x = Utils.lerp(this.parts.leftLegGroup.rotation.x, swingAngle, lerpFactor);
+                this.parts.rightLegGroup.rotation.x = Utils.lerp(this.parts.rightLegGroup.rotation.x, -swingAngle, lerpFactor);
+                // Only swing arms if not punching
+                if (!this.isPunching) {
+                    this.parts.leftArmGroup.rotation.x = Utils.lerp(this.parts.leftArmGroup.rotation.x, -swingAngle * 0.5, lerpFactor);
+                    this.parts.rightArmGroup.rotation.x = Utils.lerp(this.parts.rightArmGroup.rotation.x, swingAngle * 0.5, lerpFactor);
+                }
+
+            } else {
+                // Return to neutral when stopped on ground smoothly
+                this.parts.leftLegGroup.rotation.x = Utils.lerp(this.parts.leftLegGroup.rotation.x, 0, lerpFactor);
+                this.parts.rightLegGroup.rotation.x = Utils.lerp(this.parts.rightLegGroup.rotation.x, 0, lerpFactor);
+                 if (!this.isPunching) {
+                     this.parts.leftArmGroup.rotation.x = Utils.lerp(this.parts.leftArmGroup.rotation.x, 0, lerpFactor);
+                     this.parts.rightArmGroup.rotation.x = Utils.lerp(this.parts.rightArmGroup.rotation.x, 0, lerpFactor);
+                 }
+            }
         } else {
-            // Gradually return to neutral position when not moving
-            // Use smaller reduction factor for smoother transition
-            this.parts.leftLegGroup.rotation.x *= 0.7;
-            this.parts.rightLegGroup.rotation.x *= 0.7;
-            this.parts.leftArmGroup.rotation.x *= 0.7;
-            this.parts.rightArmGroup.rotation.x *= 0.7;
-            this.parts.torso.rotation.z *= 0.7;
-            this.parts.head.rotation.z *= 0.7;
-            this.parts.head.rotation.y *= 0.7;
-            
-            // Reset animation time when stopped
-            this.animationTime = 0;
+            // In air pose (arms/legs slightly out) - Apply gradually
+             const airPoseFactor = deltaTime * 5; // Slower transition in air
+             const legAirAngle = 0.2;
+             const armAirAngle = -0.3;
+             this.parts.leftLegGroup.rotation.x = Utils.lerp(this.parts.leftLegGroup.rotation.x, legAirAngle, airPoseFactor);
+             this.parts.rightLegGroup.rotation.x = Utils.lerp(this.parts.rightLegGroup.rotation.x, -legAirAngle, airPoseFactor);
+             if (!this.isPunching) {
+                 this.parts.leftArmGroup.rotation.x = Utils.lerp(this.parts.leftArmGroup.rotation.x, armAirAngle, airPoseFactor);
+                 this.parts.rightArmGroup.rotation.x = Utils.lerp(this.parts.rightArmGroup.rotation.x, armAirAngle, airPoseFactor);
+             }
         }
     },
-    
-    // Create first-person arms that are visible in first-person view
+
     createFirstPersonArms: function(scene) {
-        // Create a group for first-person arms
-        this.parts.fpArms = new THREE.Group();
-        
-        const characterMaterial = new THREE.MeshStandardMaterial({ 
-            map: TextureManager.get('character'),
-            transparent: true,
-            opacity: 0.95
+        this.parts.fpArms = new THREE.Group(); // This group will be attached to the CAMERA
+        if (!scene) {
+             console.error("Scene not provided to Character.createFirstPersonArms!");
+             return;
+        }
+
+        const characterTexture = TextureManager.get('character');
+        const characterMaterial = new THREE.MeshStandardMaterial({
+            map: characterTexture || null,
+            color: characterTexture ? 0xffffff : 0xcccccc
         });
-        
-        // Create a container for each arm that manages individual arm rotation
+
+        const armGeom = new THREE.BoxGeometry(0.2, 0.6, 0.2); // Slimmer arms might look better
+
+        // Left FP Arm
         const leftArmContainer = new THREE.Group();
-        const rightArmContainer = new THREE.Group();
-        
-        // Create left arm for first-person view
-        const leftArmGeometry = new THREE.BoxGeometry(0.15, 0.5, 0.15);
-        const leftArm = new THREE.Mesh(leftArmGeometry, characterMaterial);
-        leftArm.position.set(0, -0.25, 0); // Position relative to container
-        leftArm.castShadow = true;
+        const leftArm = new THREE.Mesh(armGeom, characterMaterial);
+        leftArm.position.set(0, -0.3, 0); // Pivot at top
+        leftArm.castShadow = true; // FP arms can cast shadows
         leftArmContainer.add(leftArm);
-        leftArmContainer.position.set(-0.3, -0.2, -0.1);
-        leftArmContainer.rotation.x = 0.3; // Slight downward angle
-        
-        // Create right arm for first-person view
-        const rightArmGeometry = new THREE.BoxGeometry(0.15, 0.5, 0.15);
-        const rightArm = new THREE.Mesh(rightArmGeometry, characterMaterial);
-        rightArm.position.set(0, -0.25, 0); // Position relative to container
+        leftArmContainer.position.set(-0.3, -0.35, -0.5); // Position relative to camera (X, Y, Z) - Adjusted Y
+        leftArmContainer.rotation.x = 0.1; // Slight downward angle
+        this.parts.fpArms.add(leftArmContainer);
+        this.parts.fpLeftArm = leftArmContainer; // Store container
+
+        // Right FP Arm
+        const rightArmContainer = new THREE.Group();
+        const rightArm = new THREE.Mesh(armGeom, characterMaterial);
+        rightArm.position.set(0, -0.3, 0); // Pivot at top
         rightArm.castShadow = true;
         rightArmContainer.add(rightArm);
-        rightArmContainer.position.set(0.3, -0.2, -0.1);
-        rightArmContainer.rotation.x = 0.3; // Slight downward angle
-        
-        // Add arm containers to fpArms group
-        this.parts.fpArms.add(leftArmContainer);
+        rightArmContainer.position.set(0.3, -0.35, -0.5); // Position relative to camera - Adjusted Y
+        rightArmContainer.rotation.x = 0.1; // Slight downward angle
         this.parts.fpArms.add(rightArmContainer);
-        
-        // Store references for animation
-        this.parts.fpLeftArm = leftArmContainer;
-        this.parts.fpRightArm = rightArmContainer;
-        
-        // Add fpArms to the scene directly (not to the model)
-        // This allows it to move with the camera in first-person mode
-        scene.add(this.parts.fpArms);
-        
-        // Initially hide or show based on mode
-        this.parts.fpArms.visible = this.isFirstPerson;
+        this.parts.fpRightArm = rightArmContainer; // Store container
+
+        // Initially hide
+        this.parts.fpArms.visible = false;
+
+        // Add the fpArms group TO THE CAMERA in Game.init
+        // Game.camera.add(this.parts.fpArms);
     },
-    
+
     // Update first-person arms position and visibility
-    updateFirstPersonArms: function(camera) {
-        if (!this.parts.fpArms) return;
-        
-        // Update visibility based on first-person mode
+    updateFirstPersonArms: function(deltaTime) {
+        // Ensure Game object and camera exist
+        if (!window.Game || !Game.camera || !this.parts.fpArms || !this.parts.fpLeftArm || !this.parts.fpRightArm) return;
+
         this.parts.fpArms.visible = this.isFirstPerson;
-        
+
         if (this.isFirstPerson) {
-            // Create a parent matrix to extract just the rotation but not scale/position
-            const parentMatrix = new THREE.Matrix4();
-            parentMatrix.makeRotationFromEuler(camera.rotation);
-            
-            // Position arms directly in the camera's local space
-            this.parts.fpArms.position.copy(camera.position);
-            
-            // Apply the camera's rotation to the arms
-            this.parts.fpArms.quaternion.setFromRotationMatrix(parentMatrix);
-            
-            // Fixed offset in local space (will stay relative to camera view)
-            const localOffset = new THREE.Vector3(0, -0.3, -0.6);
-            localOffset.applyQuaternion(this.parts.fpArms.quaternion);
-            this.parts.fpArms.position.add(localOffset);
-            
-            // Add bobbing effect when moving
+            // Add bobbing effect when moving on ground
+            let bobOffsetY = 0;
+            let bobOffsetX = 0;
             if (this.isMoving && this.isOnGround) {
-                // Simple arm bobbing animation
-                const bobAmount = 0.03;
-                const bobOffset = Math.sin(this.animationTime * 5) * bobAmount;
-                
-                // Apply bobbing in local Y axis
-                const upVector = new THREE.Vector3(0, 1, 0);
-                upVector.applyQuaternion(this.parts.fpArms.quaternion);
-                upVector.multiplyScalar(bobOffset);
-                this.parts.fpArms.position.add(upVector);
-                
-                // Slight side-to-side sway
-                const swayAmount = 0.01;
-                const swayOffset = Math.sin(this.animationTime * 2.5) * swayAmount;
-                
-                // Apply sway in local X axis
-                const rightVector = new THREE.Vector3(1, 0, 0);
-                rightVector.applyQuaternion(this.parts.fpArms.quaternion);
-                rightVector.multiplyScalar(swayOffset);
-                this.parts.fpArms.position.add(rightVector);
+                const bobSpeed = 10;
+                const bobAmountY = 0.015;
+                const bobAmountX = 0.01;
+                const bobTime = (Game.lastTime || performance.now()) / 1000 * bobSpeed;
+
+                bobOffsetY = Math.sin(bobTime * 2) * bobAmountY; // Vertical bob
+                bobOffsetX = Math.cos(bobTime) * bobAmountX; // Horizontal sway
             }
+
+            // Apply bobbing to the fpArms group's LOCAL position relative to camera
+            this.parts.fpArms.position.x = bobOffsetX; // Main sway applied to group
+            // Base Y position for arms
+            const baseY = -0.35;
+            this.parts.fpLeftArm.position.y = baseY + bobOffsetY;
+            this.parts.fpRightArm.position.y = baseY + bobOffsetY; // Same bob for both arms
+
+             // Smoothly return arms to default rotation if not punching
+             const lerpFactor = deltaTime * 15;
+             const baseFPArmAngle = 0.1;
+
+             if (!this.isPunching && this.parts.fpRightArm) {
+                 this.parts.fpRightArm.rotation.x = Utils.lerp(this.parts.fpRightArm.rotation.x, baseFPArmAngle, lerpFactor);
+             }
+             // Also ensure left arm returns (or stays at) base angle
+              if (this.parts.fpLeftArm) {
+                  this.parts.fpLeftArm.rotation.x = Utils.lerp(this.parts.fpLeftArm.rotation.x, baseFPArmAngle, lerpFactor);
+              }
+
         }
     },
-    
-    // Update character model visibility based on first-person mode
+
     updateVisibility: function() {
-        // In first person mode, hide the entire model except for the first-person arms
-        if (this.isFirstPerson) {
-            // Hide all parts of the character model
-            this.model.visible = false;
-            
-            // Only show first-person arms if they exist
-            if (this.parts && this.parts.fpArms) {
-                this.parts.fpArms.visible = true;
-            }
-        } else {
-            // In third-person mode, show the entire model
-            this.model.visible = true;
-            
-            // Hide first-person arms if they exist
-            if (this.parts && this.parts.fpArms) {
-                this.parts.fpArms.visible = false;
-            }
-        }
+        const visible = !this.isFirstPerson;
+        // Check if parts exist before setting visibility
+        if (this.parts.head) this.parts.head.visible = visible;
+        if (this.parts.torso) this.parts.torso.visible = visible;
+        if (this.parts.leftArmGroup) this.parts.leftArmGroup.visible = visible;
+        if (this.parts.rightArmGroup) this.parts.rightArmGroup.visible = visible;
+        if (this.parts.leftLegGroup) this.parts.leftLegGroup.visible = visible;
+        if (this.parts.rightLegGroup) this.parts.rightLegGroup.visible = visible;
+
+        // FP arms visibility handled in updateFirstPersonArms
     },
-    
-    // Update character's mesh position to match physics body
+
     update: function(deltaTime) {
-        console.log("Character update - deltaTime:", deltaTime);
-        
-        // Update position to match physics body exactly
-        this.model.position.x = this.body.position.x;
-        this.model.position.y = this.body.position.y - 0.25;
-        this.model.position.z = this.body.position.z;
-        
-        // Rotate character model to face movement direction if moving (only in third-person mode)
-        if (!this.isFirstPerson && this.lastDirection.length() > 0.1) {
-            const targetRotation = Math.atan2(this.lastDirection.x, this.lastDirection.z);
-            
-            // Smoothly rotate the model to face the movement direction
-            const currentRotation = this.model.rotation.y;
-            this.model.rotation.y = Utils.lerp(
-                currentRotation, 
-                targetRotation, 
-                0.1
-            );
-        } else if (this.isFirstPerson) {
-            // In first-person, match the character's rotation to the camera's rotation
-            if (Game.camera) {
-                this.model.rotation.y = Game.cameraRotation.y;
-            }
-        }
-        
-        // Update first-person arms if camera is available
-        if (Game.camera) {
-            this.updateFirstPersonArms(Game.camera);
-        }
-        
-        // Update character visibility based on first/third person mode
-        this.updateVisibility();
-        
-        // Track previous ground state for jump ability resets
-        const wasOnGround = this.isOnGround;
-        
-        // Reset ground detection each frame - will be set to true if detected
-        // Only reset ground status if we're not in the middle of a jump
-        if (this.body.velocity.y <= 0) {
-            this.isOnGround = false;
-            
-            // Check for ground contact by ray casting
-            // Create a ray from the character's position downward
-            const rayStart = new CANNON.Vec3(this.body.position.x, this.body.position.y, this.body.position.z);
-            const rayEnd = new CANNON.Vec3(this.body.position.x, this.body.position.y - 1.5, this.body.position.z);
-            
-            // Use Cannon.js ray casting to check for ground
-            const ray = new CANNON.Ray(rayStart, rayEnd);
-            ray.mode = CANNON.Ray.CLOSEST;
-            ray.skipBackfaces = true;
-            
-            // Use the physics world to check for intersections
-            const result = new CANNON.RaycastResult();
-            // Only try to use ray if the physics world reference exists
-            if (this.physicsWorld) {
-                const hasHit = ray.intersectWorld(this.physicsWorld, { result: result });
-                
-                // If ray hits something within 1.5 units, consider the character grounded
-                // Increased from 1.0 to 1.5 to be more forgiving
-                if (hasHit && result.distance < 1.5) {
-                    console.log("Ray detected ground at distance:", result.distance);
-                    this.isOnGround = true;
+        // Check necessary components exist
+         if (!this.body || !this.model) {
+             // console.error("Character update called before body or model initialized!"); // Reduce log spam
+             return;
+         }
+
+        // 1. Check ground status using raycast
+        this.checkGround();
+
+        // 2. Sync model position with physics body AFTER physics step
+        this.model.position.copy(this.body.position);
+
+        // 3. Rotate model and physics body
+        if (this.isFirstPerson) {
+            // In FP, the physics body's rotation should match the camera's yaw
+            if (window.Game && Game.camera) { // Check Game context
+                const cameraQuaternion = Game.camera.quaternion;
+                // Create a quaternion representing only the yaw
+                const yawQuaternion = new CANNON.Quaternion();
+                // Get camera's forward vector, project to XZ plane, get angle
+                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraQuaternion);
+                const angleY = Math.atan2(forward.x, forward.z);
+
+                // Check if angleY is a valid number
+                if (!isNaN(angleY)) {
+                    yawQuaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), angleY);
+
+                    // Apply this yaw to the physics body
+                    if (this.body.quaternion) {
+                       this.body.quaternion.copy(yawQuaternion);
+                    } else {
+                         console.error("Character.update: this.body.quaternion is missing!");
+                    }
+
+                    // Update the visual model's rotation
+                    if (this.model.rotation) {
+                        this.model.rotation.y = angleY;
+                    } else {
+                         console.error("Character.update: this.model.rotation is missing!", this.model);
+                    }
+                } else {
+                     // console.warn("Character.update: Calculated angleY is NaN."); // Reduce spam
                 }
             }
-            
-            // Also check if velocity is very low - character might be on ground
-            // This helps in cases where collision detection misses
-            if (Math.abs(this.body.velocity.y) < 0.2) { // Increased from 0.1 to 0.2
-                console.log("Setting grounded due to low Y velocity:", this.body.velocity.y);
-                this.isOnGround = true;
+        } else { // Third Person
+            if (this.lastDirection.lengthSq() > 0.01) {
+                const targetRotation = Math.atan2(this.lastDirection.x, this.lastDirection.z);
+                 // Check validity and existence
+                 if (!isNaN(targetRotation) && this.model && this.model.rotation) {
+                     let currentRotation = this.model.rotation.y;
+                     if (typeof currentRotation !== 'number') currentRotation = 0; // Ensure it's a number
+
+                     let delta = targetRotation - currentRotation;
+                     // Normalize angle difference for shortest path lerp
+                     while (delta <= -Math.PI) delta += Math.PI * 2;
+                     while (delta > Math.PI) delta -= Math.PI * 2;
+
+                     const lerpSpeed = 10; // Speed of rotation interpolation
+                     const newRotationY = currentRotation + delta * (deltaTime * lerpSpeed);
+                     this.model.rotation.y = newRotationY;
+
+                     // Also rotate the physics body in third person
+                     if (this.body && this.body.quaternion) {
+                        this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0,1,0), newRotationY);
+                     } else {
+                          console.error("Character.update (TP): this.body.quaternion is missing!");
+                     }
+                 } else {
+                      // console.warn("Character.update (TP): Invalid rotation calc or missing model/rotation."); // Reduce spam
+                 }
             }
-            
-            // Force ground status if Y position is very close to 0
-            // This is a failsafe for when all other methods fail
-            if (Math.abs(this.body.position.y - 0.25) < 0.3) {
-                console.log("Forcing ground status due to Y position:", this.body.position.y);
-                this.isOnGround = true;
-            }
         }
-        
-        // If falling fast enough, we might have walked off an edge
-        if (this.body.velocity.y < -1.0) {
-            console.log("Setting NOT grounded due to falling velocity:", this.body.velocity.y);
-            this.isOnGround = false;
-        }
-        
-        // Only reset jump abilities when landing on ground (wasn't on ground before, but is now)
-        if (!wasOnGround && this.isOnGround) {
-            console.log("Just landed on ground - resetting jump abilities");
-            this.canJump = true;
-            this.canDoubleJump = true;
-        }
-        
-        // Force reset canJump after some time on ground to prevent getting stuck
-        if (this.isOnGround && !this.canJump) {
-            // If we've been on ground for a while, force reset jump ability
-            if (!this._groundTimer) this._groundTimer = 0;
-            this._groundTimer += deltaTime;
-            
-            if (this._groundTimer > 0.5) { // After 0.5 seconds on ground
-                console.log("Force resetting jump ability after time on ground");
-                this.canJump = true;
-                this._groundTimer = 0;
-            }
-        } else {
-            this._groundTimer = 0;
-        }
-        
-        // Update punch cooldown
-        if (this.punchCooldown > 0) {
-            this.punchCooldown -= deltaTime;
-        }
-        
-        // Update punch animation if active (has priority over walking animation)
+
+
+        // 4. Update animations (walking, punching)
         if (this.isPunching) {
             this.animatePunch(deltaTime);
-        } 
-        // Otherwise update walking animation
-        else {
-            this.animateWalking(deltaTime);
-        }
-        
-        // Update double jump cooldown
-        if (this.isOnGround && this.doubleJumpCooldown > 0) {
-            this.doubleJumpCooldown -= deltaTime;
-            if (this.doubleJumpCooldown <= 0) {
-                this.doubleJumpCooldown = 0;
-                this.canDoubleJump = true;
+        } else {
+            // Ensure walking animation only happens if needed (prevents unnecessary lerping)
+            if (this.isMoving || !this.isOnGround ||
+                this.parts.leftLegGroup.rotation.x !== 0 || // Check if not already in idle pose
+                this.parts.rightLegGroup.rotation.x !== 0 ||
+                this.parts.leftArmGroup.rotation.x !== 0 ||
+                this.parts.rightArmGroup.rotation.x !== 0)
+            {
+               this.animateWalking(deltaTime);
             }
         }
+
+        // 5. Update FP arms (bobbing, etc.) - happens relative to camera
+        this.updateFirstPersonArms(deltaTime);
+
+
+        // 6. Update cooldowns
+        if (this.punchCooldown > 0) {
+            this.punchCooldown -= deltaTime;
+            if (this.punchCooldown < 0) this.punchCooldown = 0; // Prevent negative cooldown
+        }
+
+        // Note: isMoving flag is updated in move()
     }
-}; 
+}; // End of Character object definition

@@ -7,455 +7,364 @@ const Game = {
     scene: null,
     camera: null,
     renderer: null,
-    
+    canvas: null, // Store canvas reference
+
     // Game objects
     player: null,
-    island: null,
+    world: null, // Renamed from island
     dummyTarget: null,
-    
+
     // Game state
     isRunning: false,
     lastTime: 0,
-    debugMode: true, // Enable debug mode
-    
+    lastDeltaTime: 0, // Store last delta time for FPS calculation
+    debugMode: true,
+
     // Camera settings
-    cameraDistance: 10, // Will be unused in first-person mode
-    cameraHeight: 8,    // Will be unused in first-person mode
-    cameraRotation: {
-        x: 0, // Initial pitch (up/down angle) - reset to 0 for first-person
-        y: 0  // Initial yaw (left/right angle) - reset to 0 for first-person
-    },
-    minCameraPitch: -Math.PI / 2, // Minimum camera pitch (looking down) - adjusted for first-person
-    maxCameraPitch: Math.PI / 2,  // Maximum camera pitch (looking up) - adjusted for first-person
-    firstPersonMode: true, // Flag to indicate first-person mode
-    eyeHeight: 0.6, // Eye height relative to character position
-    headBobEnabled: true, // Enable head bobbing when walking
-    headBobAmount: 0.05, // Amount of head bobbing
-    headBobSpeed: 10, // Speed of head bobbing
-    headBobTime: 0, // Time counter for head bobbing
-    
-    // Pointer lock controls
+    // REMOVED third-person camera distance/height - focus on FP first
+    // cameraDistance: 10,
+    // cameraHeight: 8,
+    // cameraRotation: { x: 0, y: 0 }, // No longer needed - PointerLockControls manages directly
+    // minCameraPitch: -Math.PI / 2 + 0.1, // Use limits in PointerLockControls
+    // maxCameraPitch: Math.PI / 2 - 0.1,
+    firstPersonMode: true,
+    eyeHeight: 1.6, // Player eye height in meters (relative to player origin at feet)
+    headBobEnabled: true,
+    headBobAmount: 0.02, // Reduced bob amount
+    headBobSpeed: 6, // Slower bob speed
+    headBobTime: 0,
+
+    // Physics world reference
+    physicsWorld: null,
+
+    // Pointer lock controls instance
     controls: null,
-    
-    // Initialize game
+    crosshair: null, // Crosshair DOM element
+
     init: function() {
         console.log('Initializing game...');
-        // Create scene
+        this.canvas = document.getElementById('game-canvas');
+
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x87CEEB); // Sky blue background
-        
-        // Create camera
+        this.scene.background = new THREE.Color(0x87CEEB); // Sky blue
+        this.scene.fog = new THREE.Fog(0x87CEEB, 5, 50); // Add fog for depth
+
         this.camera = new THREE.PerspectiveCamera(
-            75, 
-            window.innerWidth / window.innerHeight, 
-            0.05, // Reduced near plane for first-person
-            1000
+            75, // FOV
+            window.innerWidth / window.innerHeight,
+            0.1, // Near plane
+            100 // Far plane (reduced to match fog)
         );
-        // Initial camera position will be set in updateCamera
-        
-        // Create renderer
-        this.renderer = new THREE.WebGLRenderer({ 
-            canvas: document.getElementById('game-canvas'),
-            antialias: true 
+        // Initial camera position will be set relative to player in updateCamera
+
+        this.renderer = new THREE.WebGLRenderer({
+            canvas: this.canvas,
+            antialias: true
         });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.shadowMap.enabled = true;
-        
-        // Create crosshair for first-person mode
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Softer shadows
+
         this.createCrosshair();
-        
-        // Initialize textures
+
         TextureManager.init();
-        
-        // Initialize physics
-        const world = Physics.init();
-        
-        // Create island
-        this.island = Island.create(this.scene, world);
-        
+
+        // Initialize physics AFTER textures
+        this.physicsWorld = Physics.init();
+
+        // Create the world (replace Island)
+        this.world = World; // Use the World module
+        this.world.create(this.scene, this.physicsWorld);
+
         // Create player character
         this.player = Character;
-        this.player.create(this.scene, world, Island.getSpawnPosition());
-        
-        // Create dummy target for knockback testing
-        // Position it at eye level, in front of the player
+        const spawnPos = this.world.getSpawnPosition(); // Get spawn from world
+        this.player.create(this.scene, this.physicsWorld, spawnPos);
+
+        // Add FP arms as a child of the camera
+        if (this.player.parts.fpArms) {
+            this.camera.add(this.player.parts.fpArms);
+            console.log("FP Arms added to camera");
+        }
+
+
+        // Create dummy target (position relative to spawn)
         this.dummyTarget = Physics.createDummy(
-            this.scene, 
-            new THREE.Vector3(3, 0.4, 0) // Position on the ground, 3 units away
+            this.scene,
+            new THREE.Vector3(spawnPos.x + 3, spawnPos.y + 0.4, spawnPos.z)
         );
-        
-        // Add light
+
         this.addLights();
-        
-        // Initialize pointer lock controls
-        this.controls = PointerLockControls.init(this.camera, document.getElementById('game-canvas'));
-        this.controls.pointerSpeed = 1.0; // Adjust sensitivity
-        
-        // Initialize input system
-        Input.init();
-        
-        // Create debug visualizations
+
+        // Initialize pointer lock controls using the canvas
+        this.controls = PointerLockControls.init(this.camera, this.canvas);
+        this.controls.pointerSpeed = 0.8; // Adjust sensitivity if needed
+
+        Input.init(); // Initialize input AFTER controls
+
         if (this.debugMode) {
-            this.createDebugVisuals();
+            this.createDebugVisuals(); // Keep debug visuals
+            this.createDebugPanel(); // Keep debug panel
         }
-        
-        // Setup window resize handler
+
         window.addEventListener('resize', () => this.onWindowResize());
-        
-        // Set game as running
+
         this.isRunning = true;
-        
-        // Create debug panel if debug mode is enabled
-        if (this.debugMode) {
-            this.createDebugPanel();
-        }
-        
-        // Update debug panel every frame
-        this.updateDebugPanel = function() {
-            if (!this.player || !this.player.body) return;
-            
-            const playerPos = this.player.body.position;
-            const playerVel = this.player.body.velocity;
-            const camRot = this.cameraRotation;
-            
-            // Update debug panel content
-            const debugPanel = document.getElementById('debug-panel');
-            if (debugPanel) {
-                debugPanel.innerHTML = `
-                    <div>FPS: ${Math.round(1 / this.lastDeltaTime)}</div>
-                    <div>Camera Mode: ${this.firstPersonMode ? 'First-Person' : 'Third-Person'} (Press P to toggle)</div>
-                    <div>Pointer Lock: ${this.controls.isLocked ? 'Active' : 'Inactive'}</div>
-                    <div>Position: X=${playerPos.x.toFixed(2)}, Y=${playerPos.y.toFixed(2)}, Z=${playerPos.z.toFixed(2)}</div>
-                    <div>Velocity: X=${playerVel.x.toFixed(2)}, Y=${playerVel.y.toFixed(2)}, Z=${playerVel.z.toFixed(2)}</div>
-                    <div>Camera Rot: X=${camRot.x.toFixed(2)}, Y=${camRot.y.toFixed(2)}</div>
-                    <div>On Ground: ${this.player.isOnGround}</div>
-                    <div>Can Jump: ${this.player.canJump}</div>
-                    <div>Can Double Jump: ${this.player.canDoubleJump}</div>
-                    <div>Controls: WASD = Move, Space = Jump, Mouse = Look</div>
-                    <div>Click Canvas: Activate Pointer Lock</div>
-                `;
-            }
-        };
-        
-        // Do one camera update to set initial position
+
+        // Initial camera position update
         this.updateCamera(0);
-        
+
         console.log('Game initialized successfully');
     },
-    
-    // Add lights to the scene
+
     addLights: function() {
-        // Ambient light for overall illumination
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        const ambientLight = new THREE.AmbientLight(0xcccccc, 0.6); // Slightly less intense ambient
         this.scene.add(ambientLight);
-        
-        // Directional light for shadows
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(10, 20, 10);
-        directionalLight.castShadow = true;
-        
-        // Configure shadow properties
-        directionalLight.shadow.mapSize.width = 1024;
-        directionalLight.shadow.mapSize.height = 1024;
-        directionalLight.shadow.camera.near = 0.5;
-        directionalLight.shadow.camera.far = 50;
-        directionalLight.shadow.camera.left = -20;
-        directionalLight.shadow.camera.right = 20;
-        directionalLight.shadow.camera.top = 20;
-        directionalLight.shadow.camera.bottom = -20;
-        
-        this.scene.add(directionalLight);
+
+        const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        sunLight.position.set(30, 50, 40); // Sun angle
+        sunLight.castShadow = true;
+        sunLight.shadow.mapSize.width = 2048; // Higher res shadow map
+        sunLight.shadow.mapSize.height = 2048;
+        // Adjust shadow camera bounds to fit the world size
+        const shadowCamSize = World.size * World.blockSize; // Use world size
+        sunLight.shadow.camera.near = 10;
+        sunLight.shadow.camera.far = 150;
+        sunLight.shadow.camera.left = -shadowCamSize / 2;
+        sunLight.shadow.camera.right = shadowCamSize / 2;
+        sunLight.shadow.camera.top = shadowCamSize / 2;
+        sunLight.shadow.camera.bottom = -shadowCamSize / 2;
+        sunLight.shadow.bias = -0.001; // Reduce shadow acne
+
+        this.scene.add(sunLight);
+        // this.scene.add(new THREE.CameraHelper(sunLight.shadow.camera)); // Debug shadow frustum
     },
-    
-    // Handle window resize
+
     onWindowResize: function() {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
     },
-    
-    // Update camera rotation based on input
-    updateCameraRotation: function(deltaTime) {
-        // Get camera rotation input
-        const rotation = Input.getCameraRotation();
-        
-        // Apply rotation with proper delta time scaling for consistent movement
-        this.cameraRotation.y += rotation.y * (deltaTime * 60); // Normalize to 60fps
-        this.cameraRotation.x += rotation.x * (deltaTime * 60); // Normalize to 60fps
-        
-        // Clamp vertical rotation to prevent flipping
-        this.cameraRotation.x = Utils.clamp(
-            this.cameraRotation.x,
-            this.minCameraPitch,
-            this.maxCameraPitch
-        );
-        
-        // Log camera rotation for debugging
-        console.log('Camera rotation after update:', this.cameraRotation);
-    },
-    
-    // Update camera position to follow player in first-person
+
+    // REMOVED: updateCameraRotation - PointerLockControls handles this directly
+
     updateCamera: function(deltaTime) {
-        if (this.firstPersonMode) {
-            // Get player position
-            const playerPos = this.player.model.position;
-            
-            // Calculate head bobbing if enabled and player is moving and on ground
-            let bobOffset = 0;
-            if (this.headBobEnabled && this.player.isMoving && this.player.isOnGround) {
-                this.headBobTime += deltaTime * this.headBobSpeed;
-                bobOffset = Math.sin(this.headBobTime) * this.headBobAmount;
-            }
-            
-            // Position camera at player's eye level with bobbing
-            this.camera.position.x = playerPos.x;
-            this.camera.position.y = playerPos.y + this.eyeHeight + bobOffset;
-            this.camera.position.z = playerPos.z;
-            
-            // For first-person, we have two camera control modes:
-            if (this.controls && this.controls.isLocked) {
-                // 1. Pointer Lock Controls (preferred)
-                // Nothing to do here - controls handle the rotation
-                
-                // Sync our internal rotation tracker with the camera
-                const euler = new THREE.Euler(0, 0, 0, 'YXZ');
-                euler.setFromQuaternion(this.camera.quaternion);
-                this.cameraRotation.x = euler.x;
-                this.cameraRotation.y = euler.y;
-            } else {
-                // 2. Fallback: Manual rotation (used when pointer lock is not available)
-                this.updateCameraRotation(deltaTime);
-                
-                // Apply rotations with proper order to avoid gimbal lock
-                this.camera.rotation.order = "YXZ"; // Yaw, Pitch, Roll order
-                this.camera.rotation.x = this.cameraRotation.x;
-                this.camera.rotation.y = this.cameraRotation.y;
-                this.camera.rotation.z = 0; // No roll
-            }
-            
-            // ALWAYS update player model rotation to match camera's yaw
-            // This ensures the physics body and hit detection work properly
-            this.player.model.rotation.y = this.cameraRotation.y;
+        if (!this.player || !this.player.body) return;
+
+        const playerBodyPos = this.player.body.position;
+
+        // Always position camera at player's eye level
+        let targetCameraY = playerBodyPos.y + this.eyeHeight;
+
+        // Calculate head bobbing offset
+        let bobOffsetY = 0;
+        if (this.headBobEnabled && this.player.isMoving && this.player.isOnGround) {
+            this.headBobTime += deltaTime * this.headBobSpeed;
+            bobOffsetY = Math.sin(this.headBobTime) * this.headBobAmount;
         } else {
-            // Third-person mode
-            // First update camera rotation
-            this.updateCameraRotation(deltaTime);
-            
-            const playerPos = this.player.model.position;
-            
-            // Calculate orbit camera position based on distance and rotation
-            const offsetX = Math.sin(this.cameraRotation.y) * Math.cos(this.cameraRotation.x) * this.cameraDistance;
-            const offsetY = Math.sin(this.cameraRotation.x) * this.cameraDistance;
-            const offsetZ = Math.cos(this.cameraRotation.y) * Math.cos(this.cameraRotation.x) * this.cameraDistance;
-            
-            // Set camera position
-            this.camera.position.x = playerPos.x - offsetX;
-            this.camera.position.y = playerPos.y + this.cameraHeight + offsetY;
-            this.camera.position.z = playerPos.z - offsetZ;
-            
-            // Make camera look at player
-            this.camera.lookAt(
-                playerPos.x,
-                playerPos.y + 1, // Look slightly above the player
-                playerPos.z
-            );
+             // Reset bob time when not bobbing
+             this.headBobTime = 0;
+        }
+
+        // Smoothly interpolate camera position towards target
+        const lerpFactor = deltaTime * 15.0; // Adjust responsiveness
+        this.camera.position.x = Utils.lerp(this.camera.position.x, playerBodyPos.x, lerpFactor);
+        this.camera.position.y = Utils.lerp(this.camera.position.y, targetCameraY + bobOffsetY, lerpFactor);
+        this.camera.position.z = Utils.lerp(this.camera.position.z, playerBodyPos.z, lerpFactor);
+
+
+        // Camera ROTATION is handled entirely by PointerLockControls.onMouseMove
+        // No need to manually set camera.rotation here if controls are active.
+
+        // Ensure the player's physics body rotation matches the camera's yaw in FP mode
+        // This is now handled within Character.update()
+
+        // Update third-person camera logic if re-enabled later
+        if (!this.firstPersonMode) {
+            // TODO: Implement third-person camera logic if needed
+            // It would involve calculating offset based on Game.controls.euler.x/y
+            // and performing raycasts to avoid clipping through walls.
         }
     },
-    
-    // Create crosshair for first-person mode
-    createCrosshair: function() {
-        // Create crosshair element
+
+
+    createCrosshair: function() { // Keep unchanged
         const crosshair = document.createElement('div');
         crosshair.id = 'crosshair';
-        
-        // Create crosshair lines
         const verticalLine = document.createElement('div');
         verticalLine.className = 'crosshair-line vertical';
-        
         const horizontalLine = document.createElement('div');
         horizontalLine.className = 'crosshair-line horizontal';
-        
-        // Add lines to crosshair
         crosshair.appendChild(verticalLine);
         crosshair.appendChild(horizontalLine);
-        
-        // Add crosshair to body
         document.body.appendChild(crosshair);
-        
-        // Store reference to crosshair
         this.crosshair = crosshair;
-        
-        // Initially set visibility based on first-person mode
         this.updateCrosshairVisibility();
     },
-    
-    // Update crosshair visibility based on first-person mode
+
     updateCrosshairVisibility: function() {
         if (this.crosshair) {
-            this.crosshair.style.display = this.firstPersonMode ? 'block' : 'none';
+            // *** ADD THIS CHECK: *** Only check isLocked if controls exists
+            const showCrosshair = this.firstPersonMode && this.controls && this.controls.isLocked;
+            this.crosshair.style.display = showCrosshair ? 'block' : 'none';
         }
     },
-    
-    // Process player input
+
+
+
     processInput: function(deltaTime) {
-        // Update input system first, before checking any keys
-        Input.update();
-        
-        // Update crosshair visibility in case mode changed
-        this.updateCrosshairVisibility();
-        
-        // Get movement direction based on camera orientation
+        // Update input system (caches current state, resets frame-specific flags)
+        Input.updateStartFrame(); // Call at start
+
+        // Toggle camera mode (handled in Input.init via key listener)
+
+        // Get movement direction relative to camera
         const direction = Input.getMovementDirection(this.camera);
-        
-        // Move player based on input
         this.player.move(direction, deltaTime);
-        
-        // Handle jump
-        const spacePressed = Input.isKeyPressed('Space');
-        const jumpPossible = (this.player.canJump && this.player.isOnGround) || 
-                           (this.player.canDoubleJump && !this.player.isOnGround);
-                           
-        // Try to jump both when spaceJustPressed flag is set OR space is held down (every few frames)
-        // This gives us a backup method in case the flag-based approach isn't working
-        if ((Input.isJumpPressed() || (spacePressed && Math.random() < 0.1)) && jumpPossible) {
-            console.log("Jump attempt - flag or random chance while key held");
+
+        // Handle jump (using the reliable "just pressed" check)
+        if (Input.isJumpJustPressed()) {
+             console.log("Jump key just pressed, attempting jump...");
             this.player.jump();
-        } else {
-            // Log why jump failed if space was pressed but jump didn't happen
-            if (spacePressed && !jumpPossible) {
-                console.log("Jump failed: Can't jump (canJump:", this.player.canJump, 
-                           "canDoubleJump:", this.player.canDoubleJump, 
-                           "isOnGround:", this.player.isOnGround, ")");
-            }
         }
-        
-        // Handle knockback (punch)
-        if (Input.isMouseClicked()) {
-            // Always trigger punch animation on mouse click
+
+        // Handle punch/action (using reliable "just clicked" check)
+        if (Input.isMouseJustClicked()) {
+            console.log("Mouse just clicked, attempting punch...");
             this.player.startPunchAnimation();
-            
-            // Calculate distance to dummy
-            const playerPos = new THREE.Vector3().copy(this.player.model.position);
-            const dummyPos = new THREE.Vector3().copy(this.dummyTarget.mesh.position);
-            const distance = playerPos.distanceTo(dummyPos);
-            
-            // Only apply knockback if close enough
-            if (distance < 3) {
+
+            // Apply knockback (check distance)
+            const playerPos = this.player.body.position;
+            const dummyPos = this.dummyTarget.body.position;
+            const distanceSq = playerPos.distanceSquared(dummyPos); // Use squared distance
+            if (distanceSq < 3 * 3) { // Range check (3 units)
                 this.player.applyKnockback(this.dummyTarget);
             }
+             // TODO: Add block breaking/placing raycast here later
         }
+
+         // Third-person camera rotation input (if mode is enabled)
+         if (!this.firstPersonMode) {
+             const rotDelta = Input.getCameraRotationInputDelta();
+             // Apply rotDelta to camera (e.g., using controls.euler or directly)
+             // Need to re-implement this part carefully if TP mode is desired.
+         }
     },
-    
-    // Check if player is out of bounds
+
     checkBounds: function() {
-        // Check if player fell off the island
-        if (Utils.isOutOfBounds(this.player.model.position, Island.size)) {
-            // Reset player position
-            this.player.reset(Island.getSpawnPosition());
+        // Check if player fell off the world
+        if (this.player.body.position.y < -10) { // Simple Y check for falling
+            this.player.reset(this.world.getSpawnPosition());
+            console.log("Player fell out of bounds, resetting.");
         }
-        
-        // Check if dummy fell off the island
-        if (Utils.isOutOfBounds(this.dummyTarget.mesh.position, Island.size)) {
-            // Reset dummy position
+
+        // Check if dummy fell off
+        if (this.dummyTarget.body.position.y < -10) {
             Physics.resetObject(
-                this.dummyTarget, 
-                new THREE.Vector3(3, 0.4, 0) // Reset to starting position on the ground
+                this.dummyTarget,
+                // Recalculate initial dummy position relative to spawn
+                 new THREE.Vector3(this.world.getSpawnPosition().x + 3, this.world.getSpawnPosition().y + 0.4, this.world.getSpawnPosition().z)
             );
+            console.log("Dummy fell out of bounds, resetting.");
         }
     },
-    
-    // Create a debug visualization for the camera direction
-    createDebugVisuals: function() {
-        // Create a direction indicator for the camera
+
+    createDebugVisuals: function() { // Keep unchanged
         const arrowHelper = new THREE.ArrowHelper(
-            new THREE.Vector3(0, 0, -1), // Default forward direction
-            new THREE.Vector3(0, 0, 0),  // Origin
-            2,                           // Length
-            0xff0000,                    // Color (red)
-            0.2,                         // Head length
-            0.1                          // Head width
+            new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0, 0),
+            2, 0xff0000, 0.2, 0.1
         );
-        
-        // Add to scene
         this.scene.add(arrowHelper);
-        
-        // Store reference
         this.debugArrow = arrowHelper;
     },
-    
-    // Update debug visualization
-    updateDebugVisuals: function() {
-        if (!this.debugArrow) return;
-        
-        // Update position to match camera
+
+    updateDebugVisuals: function() { // Keep unchanged
+        if (!this.debugArrow || !this.camera) return;
         this.debugArrow.position.copy(this.camera.position);
-        
-        // Calculate direction vector from camera rotation
         const direction = new THREE.Vector3(0, 0, -1);
-        direction.applyEuler(this.camera.rotation);
-        
-        // Update arrow direction
+        direction.applyQuaternion(this.camera.quaternion); // Use quaternion directly
         this.debugArrow.setDirection(direction);
     },
-    
+
+    updateDebugPanel: function() { // Update panel content
+        if (!this.player || !this.player.body || !this.debugMode) return;
+
+        const playerPos = this.player.body.position;
+        const playerVel = this.player.body.velocity;
+        const camEuler = this.controls.euler; // Get rotation from controls
+
+        const debugPanel = document.getElementById('debug-panel');
+        if (debugPanel) {
+            debugPanel.innerHTML = `
+                <div>FPS: ${this.lastDeltaTime > 0 ? Math.round(1 / this.lastDeltaTime) : 'N/A'}</div>
+                <div>Mode: ${this.firstPersonMode ? 'First-Person' : 'Third-Person'} (P)</div>
+                <div>Pointer Lock: ${this.controls.isLocked}</div>
+                <div>Pos: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}</div>
+                <div>Vel: ${playerVel.x.toFixed(1)}, ${playerVel.y.toFixed(1)}, ${playerVel.z.toFixed(1)}</div>
+                <div>Cam Rot: X=${camEuler.x.toFixed(2)}, Y=${camEuler.y.toFixed(2)}</div>
+                <div>Grounded: ${this.player.isOnGround}</div>
+                <div>Can Jump: ${this.player.canJump}</div>
+                <div>Moving: ${this.player.isMoving}</div>
+                <div>Click Canvas: Activate Lock</div>
+            `;
+        }
+    },
+
+
     // Game loop
     update: function(currentTime) {
         if (!this.isRunning) return;
-        
-        // Request next frame
+
         requestAnimationFrame((time) => this.update(time));
-        
-        // Calculate delta time
-        const deltaTime = (currentTime - this.lastTime) / 1000;
+
+        const deltaTime = Math.min((currentTime - this.lastTime) / 1000, 0.05); // Clamp delta time
         this.lastTime = currentTime;
-        this.lastDeltaTime = deltaTime;
-        
-        // Skip if delta time is too high (indicates tab was inactive)
-        if (deltaTime > 0.1) return;
-        
-        // Process input
+        this.lastDeltaTime = deltaTime; // Store for FPS display
+
+        if (deltaTime <= 0) return; // Skip if no time passed
+
+
+        // 1. Process Input (reads keys/mouse, calculates movement vector)
         this.processInput(deltaTime);
-        
-        // Update physics
+
+        // 2. Update Physics (steps the simulation)
         Physics.update(deltaTime);
-        
-        // Update game objects
+
+        // 3. Update Game Objects (sync meshes, run logic, animations)
         this.player.update(deltaTime);
-        Physics.updateObjectMesh(this.dummyTarget);
-        Island.update(deltaTime);
-        
-        // Check if player is out of bounds
+        Physics.updateObjectMesh(this.dummyTarget); // Sync dummy mesh
+        this.world.update(deltaTime); // Update world (e.g., animated textures)
+
+        // 4. Check Bounds / Game Rules
         this.checkBounds();
-        
-        // Update camera
+
+        // 5. Update Camera Position (follows player)
+        //    Camera Rotation is handled by PointerLockControls internally via mouse events
         this.updateCamera(deltaTime);
-        
-        // Update debug visualizations
-        if (this.debugMode && this.debugArrow) {
+
+        // 6. Update UI / Debug Info
+        this.updateCrosshairVisibility(); // Show/hide crosshair based on lock state
+        if (this.debugMode) {
             this.updateDebugVisuals();
-        }
-        
-        // Update debug information if debug mode is enabled
-        if (this.debugMode && this.updateDebugPanel) {
             this.updateDebugPanel();
         }
-        
-        // Render scene
+
+        // 7. Update Input System End Frame (copy current state to previous state)
+        Input.updateEndFrame(); // Call at end
+
+        // 8. Render Scene
         this.renderer.render(this.scene, this.camera);
     },
-    
-    // Start game
+
     start: function() {
         console.log('Starting game loop');
         this.isRunning = true;
         this.lastTime = performance.now();
-        this.lastDeltaTime = 0;
+        this.lastDeltaTime = 0; // Initialize delta time
         this.update(this.lastTime);
     },
-    
-    // Create debug panel
-    createDebugPanel: function() {
-        // Add debug info panel
+
+    createDebugPanel: function() { // Keep unchanged
         const debugPanel = document.createElement('div');
         debugPanel.id = 'debug-panel';
         debugPanel.style.position = 'absolute';
@@ -467,5 +376,22 @@ const Game = {
         debugPanel.style.fontFamily = 'monospace';
         debugPanel.style.zIndex = '1000';
         document.body.appendChild(debugPanel);
-    }
-}; 
+    },
+
+     // Added method for toggling FP/TP (called by Input)
+     toggleFirstPersonMode: function() {
+         this.firstPersonMode = !this.firstPersonMode;
+         this.player.isFirstPerson = this.firstPersonMode;
+         this.player.updateVisibility(); // Update player model visibility
+
+         if (this.firstPersonMode) {
+             this.controls.lock(); // Enter pointer lock
+         } else {
+             this.controls.unlock(); // Exit pointer lock
+             // Reset camera rotation if switching to TP? Or keep orientation?
+             // Might need specific TP camera logic here.
+         }
+         this.updateCrosshairVisibility(); // Update crosshair now
+         console.log("Toggled first-person mode:", this.firstPersonMode);
+     }
+};
