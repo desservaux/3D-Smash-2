@@ -1,17 +1,43 @@
-entrypoint = "index.js"
-modules = ["nodejs-20"]
+run = "npm start"
 hidden = [".config", "package-lock.json"]
+entrypoint = "index.js"
+
+[nix]
+channel = "stable-22_11"
+
+[env]
+PORT = "3000"
+
+[packager]
+language = "nodejs"
+
+[packager.features]
+packageSearch = true
+guessImports = true
+
+[languages]
+
+[languages.javascript]
+pattern = "**/*.js"
+
+[languages.javascript.languageServer]
+start = "typescript-language-server --stdio"
 
 [gitHubImport]
 requiredFiles = [".replit", "replit.nix", "package.json", "package-lock.json"]
-
-[nix]
-channel = "stable-24_05"
 
 [unitTest]
 language = "nodejs"
 
 [deployment]
-run = ["node", "index.js"]
+run = ["npm", "start"]
 deploymentTarget = "cloudrun"
 ignorePorts = false
+
+[[ports]]
+localPort = 3000
+externalPort = 80
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
