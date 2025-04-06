@@ -219,8 +219,10 @@ const Game = {
         // Toggle camera mode (handled in Input.init via key listener)
 
         // Get movement direction relative to camera
-        const direction = Input.getMovementDirection(this.camera);
-        this.player.move(direction, deltaTime);
+        const threeDirection = Input.getMovementDirection(this.camera);
+        // Convert THREE.Vector3 to CANNON.Vec3 for physics
+        const cannonDirection = new CANNON.Vec3(threeDirection.x, threeDirection.y, threeDirection.z);
+        this.player.move(cannonDirection, deltaTime);
 
         // Handle jump (using the reliable "just pressed" check)
         if (Input.isJumpJustPressed()) {
@@ -276,6 +278,27 @@ const Game = {
         );
         this.scene.add(arrowHelper);
         this.debugArrow = arrowHelper;
+
+        // Add physics debug visualization
+        if (this.player && this.player.body) {
+            console.log("Creating debug visualization for player body");
+            Physics.createDebugBody(this.scene, this.player.body, 0xff0000);
+        }
+        
+        // Debug visualization for ground blocks
+        // Find blocks near the spawn point at y=0 and y=1
+        // This would help us see if the ground physics is where we expect
+        if (this.physicsWorld) {
+            console.log("Creating debug visualization for ground bodies");
+            for (let body of this.physicsWorld.bodies) {
+                // Only create debug for a few bodies around spawn to avoid clutter
+                if (body.type === CANNON.Body.STATIC && 
+                    Math.abs(body.position.x) < 3 && 
+                    Math.abs(body.position.z) < 3) {
+                    Physics.createDebugBody(this.scene, body, 0x0000ff);
+                }
+            }
+        }
     },
 
     updateDebugVisuals: function() { // Keep unchanged
@@ -284,6 +307,11 @@ const Game = {
         const direction = new THREE.Vector3(0, 0, -1);
         direction.applyQuaternion(this.camera.quaternion); // Use quaternion directly
         this.debugArrow.setDirection(direction);
+        
+        // Update physics debug visualizations
+        if (this.debugMode && Physics.updateDebugBodies) {
+            Physics.updateDebugBodies();
+        }
     },
 
     updateDebugPanel: function() { // Update panel content
@@ -378,11 +406,15 @@ const Game = {
         document.body.appendChild(debugPanel);
     },
 
-     // Added method for toggling FP/TP (called by Input)
+     // REMOVED: toggleFirstPersonMode method
+     /*
      toggleFirstPersonMode: function() {
          this.firstPersonMode = !this.firstPersonMode;
-         this.player.isFirstPerson = this.firstPersonMode;
-         this.player.updateVisibility(); // Update player model visibility
+         // Update player visibility (assuming player exists)
+         if (this.player) {
+             this.player.isFirstPerson = this.firstPersonMode;
+             this.player.updateVisibility(); 
+         }
 
          if (this.firstPersonMode) {
              this.controls.lock(); // Enter pointer lock
@@ -394,4 +426,5 @@ const Game = {
          this.updateCrosshairVisibility(); // Update crosshair now
          console.log("Toggled first-person mode:", this.firstPersonMode);
      }
+     */
 };

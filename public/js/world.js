@@ -165,7 +165,9 @@ const World = {
                 const body = new CANNON.Body({
                     mass: 0, // Static
                     shape: physicsShape,
-                    material: this.physicsGroundMaterial // Use the shared ground material
+                    material: this.physicsGroundMaterial, // Use the shared ground material
+                    collisionFilterGroup: 1, // Ground group (will collide with player group 2)
+                    collisionFilterMask: 2  // Can collide with group 2 (player)
                 });
 
                  // Position physics body at the center of the block
@@ -174,6 +176,12 @@ const World = {
                      y * this.blockSize + this.blockSize / 2,
                      z * this.blockSize + this.blockSize / 2
                  );
+
+                // --- DEBUG LOGGING --- 
+                if (x === 0 && y === 1 && z === 0) { // Log the position of the block at (0, 1, 0)
+                    console.log(`World: Physics body for block (0,1,0) at position:`, body.position);
+                }
+                // --- END DEBUG LOGGING ---
 
                 this.physicsWorldRef.addBody(body);
                 this.physicsBodies[key] = body; // Store reference if needed later
@@ -220,13 +228,27 @@ const World = {
                   break;
               }
          }
-        // Spawn slightly above the highest block's center
-        const spawnX = 0 * this.blockSize + this.blockSize / 2;
-        const spawnY = (highestY + 1) * this.blockSize; // Player origin is at feet
-        const spawnZ = 0 * this.blockSize + this.blockSize / 2;
+        
+        // Check if we found a valid block
+        if (highestY < 0) {
+            console.warn("No valid ground block found, defaulting to y=0");
+            highestY = 0;
+        }
+        
+        // Spawn point should be centered on a block and at the right height
+        // Block size is 1, physics bodies are centered on their positions
+        const spawnX = 0.5; // Center of the (0,y,0) block 
+        const spawnY = (highestY + 1) + 0.01; // One block above highest + small offset
+        const spawnZ = 0.5; // Center of the (0,y,0) block
 
-        // Add small offset if needed to prevent spawning inside ground
-        return new THREE.Vector3(spawnX, spawnY + 0.1, spawnZ);
+        const finalSpawnPos = new THREE.Vector3(spawnX, spawnY, spawnZ);
+        console.log(`World: Calculated spawn position: (${finalSpawnPos.x.toFixed(2)}, ${finalSpawnPos.y.toFixed(2)}, ${finalSpawnPos.z.toFixed(2)})`);
+        
+        // Debug the blocks around spawn
+        console.log(`World: Block at (0,${highestY},0) is type ${this.getBlock(0, highestY, 0)}`);
+        console.log(`World: Block above at (0,${highestY+1},0) is type ${this.getBlock(0, highestY+1, 0)}`);
+        
+        return finalSpawnPos;
     },
 
     addGridHelper: function(scene) {

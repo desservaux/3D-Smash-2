@@ -26,9 +26,16 @@ const Input = {
             }
             this.keys[event.code] = true;
 
-            // Special handling for P key (toggle first person)
+            // Corrected: Toggle Game.debugMode on P key press
             if (event.code === 'KeyP' && !this.previousKeys['KeyP']) { // Check if just pressed
-                this.toggleFirstPersonMode();
+                if (window.Game) { // Ensure Game object exists
+                    Game.debugMode = !Game.debugMode;
+                    const debugPanel = document.getElementById('debug-panel');
+                    const debugKeys = document.getElementById('debug-keys');
+                    if (debugPanel) debugPanel.style.display = Game.debugMode ? 'block' : 'none';
+                    if (debugKeys) debugKeys.style.display = Game.debugMode ? 'block' : 'none';
+                    console.log("Debug mode toggled via Input:", Game.debugMode);
+                }
             }
 
             // Special handling for Escape key (exit pointer lock)

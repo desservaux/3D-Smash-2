@@ -23,19 +23,20 @@ const Character = {
     },
 
     // Character properties
-    moveSpeed: 5, // More realistic walking speed
-    jumpForce: 8, // Adjusted jump force
+    moveSpeed: 25, // Increased from 5 (5x faster)
+    jumpForce: 12, // Slightly increased for better jump height with faster movement
     canJump: true,
-    // canDoubleJump: true, // Let's disable double jump for now for simplicity
-    // doubleJumpCooldown: 0,
     isOnGround: false,
+    lastGroundedTime: 0, // Track when we were last grounded for coyote time
+    coyoteTimeThreshold: 0.2, // Seconds we allow jumping after leaving ground
+    groundDetectionCushion: 0.2, // Tolerance for ground detection
     knockbackMultiplier: 1.0,
-    lastDirection: new THREE.Vector3(),
     moveSmoothing: 0.2, // Lower for quicker response
-    isFirstPerson: true, // Flag for first-person mode
+    // Simplified: Assuming always first-person for now
+    // isFirstPerson: true, // Flag for first-person mode
 
     // Animation properties
-    animationSpeed: 8, // Slower walk animation
+    animationSpeed: 16, // Doubled from 8 to match faster movement
     animationTime: 0,
     isMoving: false,
 
@@ -63,41 +64,51 @@ const Character = {
             return null; // Indicate failure
         }
 
-
-        // Create physics body - Capsule might be better but Box is simpler for now
-        // Use a slightly smaller box than the visual model to avoid snagging
-        const characterShape = new CANNON.Box(new CANNON.Vec3(0.3, 0.8, 0.3)); // Width, Height, Depth / 2
+        // Create physics body
+        // Use a capsule shape instead of a box for better movement
+        const characterRadius = 0.25;
+        const characterHeight = 1.6; // Total height
+        const characterShape = new CANNON.Box(new CANNON.Vec3(0.25, 0.85, 0.25));
+        
         const characterMaterial = new CANNON.Material('character');
-        characterMaterial.friction = 0.1; // Low friction against walls
+        characterMaterial.friction = 0.3; // Higher friction against walls
         characterMaterial.restitution = 0.0; // No bounce
 
         this.body = new CANNON.Body({
             mass: 70, // Realistic mass (kg)
             material: characterMaterial,
             fixedRotation: true, // Prevent tumbling
-            linearDamping: 0.9 // High damping simulates air resistance/friction - stops sliding
+            linearDamping: 0.1, // Reduced damping for more responsive movement
+            angularDamping: 0.99, // High angular damping to prevent unwanted rotation
+            allowSleep: false, // Ensure the physics body never sleeps
+            collisionFilterGroup: 2, // Player group
+            collisionFilterMask: -1  // Collide with everything
         });
         if (!this.body) {
              console.error("Failed to create Cannon.Body!");
              return null;
         }
 
-        // Offset the shape vertically so the body origin is at the feet
-        this.body.addShape(characterShape, new CANNON.Vec3(0, 0.8, 0)); // Offset shape by its half-height
-
+        // Add the shape with offset (position is at feet, shape is centered on body)
+        this.body.addShape(characterShape, new CANNON.Vec3(0, 0.85, 0));
+        
+        // Position the body at the spawn position
         this.body.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
         this.body.updateMassProperties();
 
         // Ensure world exists before adding body
         if (world) {
            world.addBody(this.body);
+           console.log("Added character body to physics world at:", this.body.position.toString());
         } else {
            console.error("Physics world not provided to Character.create!");
         }
 
-
-        this.isOnGround = false; // Start assuming not on ground
+        this.isOnGround = false; 
         this.canJump = false;
+        
+        // Apply a small impulse at start to ensure physics activation
+        this.body.applyImpulse(new CANNON.Vec3(0, 0.1, 0), this.body.position);
 
         console.log("Character created at:", spawnPosition);
         return this.model; // Return the Three.js model group
@@ -193,65 +204,142 @@ const Character = {
     checkGround: function() {
         // Safety check: ensure body and physics world are available
         if (!this.body || !this.physicsWorld) {
-            // console.warn("checkGround called too early or physics world missing.");
-            this.isOnGround = false; // Assume not grounded if check cannot be performed
+            this.isOnGround = false; 
             this.canJump = false;
             return;
         }
 
-        const start = this.body.position;
-        // Ray starts slightly below the body center (at feet level + offset) and goes down
-        const rayVerticalOffset = 0.1; // How much below the body origin (feet) to start the ray
-        const rayCheckDistance = 0.2;  // How far down to check from the start point (needs to be > offset)
-
-        // Ensure ray starts slightly above ground for checks
-        const rayFrom = new CANNON.Vec3(start.x, start.y + rayVerticalOffset, start.z);
-        const rayTo = new CANNON.Vec3(start.x, start.y - rayCheckDistance, start.z);
-
-        // Use a reusable result object if desired, or create new one
-        const result = new CANNON.RaycastResult();
-        result.reset();
-
-        // Collision filter options (important to avoid hitting self)
-        const options = {
-             // collisionFilterGroup: 1, // Assuming character is group 1 - Optional: define groups/masks if needed
-             collisionFilterMask: -1,  // Check against everything
-             skipBackfaces: true      // Don't detect hits from inside objects
-        };
-
-        // Perform the raycast using the world method
-        const hasHit = this.physicsWorld.raycastClosest(rayFrom, rayTo, options, result);
-
-        // Check if the hit is valid ground
-        const groundNormalThreshold = 0.7; // How steep a slope counts as ground
+        // Get the current position of the character
+        const position = this.body.position.clone();
+        
+        // Cast multiple rays from the character's position to better detect the ground
+        // Setup rays in a grid pattern for more reliable detection
+        const rays = [
+            // Center ray - start closer to feet
+            { from: new CANNON.Vec3(position.x, position.y, position.z), 
+              to: new CANNON.Vec3(position.x, position.y - 2.5, position.z) },
+            // Corner rays
+            { from: new CANNON.Vec3(position.x - 0.2, position.y, position.z - 0.2), 
+              to: new CANNON.Vec3(position.x - 0.2, position.y - 2.5, position.z - 0.2) },
+            { from: new CANNON.Vec3(position.x + 0.2, position.y, position.z - 0.2), 
+              to: new CANNON.Vec3(position.x + 0.2, position.y - 2.5, position.z - 0.2) },
+            { from: new CANNON.Vec3(position.x - 0.2, position.y, position.z + 0.2), 
+              to: new CANNON.Vec3(position.x - 0.2, position.y - 2.5, position.z + 0.2) },
+            { from: new CANNON.Vec3(position.x + 0.2, position.y, position.z + 0.2), 
+              to: new CANNON.Vec3(position.x + 0.2, position.y - 2.5, position.z + 0.2) }
+        ];
+        
         let onValidGround = false;
+        let closestHitDistance = Infinity;
+        let hitNormalY = null;
+        let hitBody = null;
+        
+        // Temporarily disable collision response on the character
+        const originalCollisionResponse = this.body.collisionResponse;
+        this.body.collisionResponse = false;
 
-        if (hasHit) {
-            // Optional: Check if the hit body is NOT the character itself
-            // This check might be needed depending on CANNON version and setup.
-            // if (result.body !== this.body) { // Example check
-                 if (result.hitNormalWorld.y >= groundNormalThreshold) {
-                      onValidGround = true;
-                 }
-            // }
-        }
+        // Options for raycast
+        const options = {
+             collisionFilterMask: -1, // Check against everything
+             skipBackfaces: false
+        };
+        
+        // Use a single reusable result object
+        const result = new CANNON.RaycastResult();
 
-
-        if (onValidGround) {
-             if (!this.isOnGround) {
-                 // console.log("Ground contact detected by raycast");
-             }
-             this.isOnGround = true;
-             this.canJump = true; // Allow jumping when grounded
-        } else {
-            if (this.isOnGround) {
-                // console.log("Left ground");
+        // Perform raycasts for each ray
+        for (const ray of rays) {
+            result.reset(); // Reset result for this ray
+            
+            const hasHit = this.physicsWorld.raycastClosest(ray.from, ray.to, options, result);
+            
+            if (hasHit && result.body !== this.body) {
+                // Consider surfaces with normal.y > 0.5 as valid ground
+                // And consider anything within groundDetectionCushion distance as ground
+                if (result.hitNormalWorld.y >= 0.5 && 
+                    result.distance < this.groundDetectionCushion + 2.0 && 
+                    result.distance < closestHitDistance) {
+                    closestHitDistance = result.distance;
+                    onValidGround = true;
+                    hitNormalY = result.hitNormalWorld.y;
+                    hitBody = result.body;
+                }
             }
-            this.isOnGround = false;
-            this.canJump = false;
         }
-        // Optional Debug Ray
-        // this.drawDebugRay(rayFrom, rayTo, onValidGround ? 0x00ff00 : 0xff0000); // Green=ground, Red=air
+        
+        // Restore collision response
+        this.body.collisionResponse = originalCollisionResponse;
+
+        // Check contacts as another way to detect ground
+        if (!onValidGround) {
+            const contacts = this.physicsWorld.contacts;
+            for (let i = 0; i < contacts.length; i++) {
+                const contact = contacts[i];
+                if ((contact.bi === this.body || contact.bj === this.body)) {
+                    const otherBody = contact.bi === this.body ? contact.bj : contact.bi;
+                    const normal = contact.bi === this.body ? contact.ni : contact.ni.scale(-1);
+                    
+                    // Check if contact normal is pointing upward
+                    if (normal.y > 0.5) {
+                        onValidGround = true;
+                        hitNormalY = normal.y;
+                        hitBody = otherBody;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Check Y velocity as a last resort - if very small and we're moving down, we're probably on ground
+        const isMovingDown = this.body.velocity.y < 0;
+        const isNearlyStoppedVertically = Math.abs(this.body.velocity.y) < 0.5;
+        
+        if (isMovingDown && isNearlyStoppedVertically && !onValidGround) {
+            // Look for any physics body below us
+            result.reset();
+            const farRay = {
+                from: new CANNON.Vec3(position.x, position.y, position.z),
+                to: new CANNON.Vec3(position.x, position.y - 3.0, position.z)
+            };
+            
+            const farHasHit = this.physicsWorld.raycastClosest(farRay.from, farRay.to, options, result);
+            if (farHasHit && result.body !== this.body && result.distance < 3.0) {
+                // If anything is nearby below us and we're barely moving, consider us grounded
+                onValidGround = true;
+                closestHitDistance = result.distance;
+                hitNormalY = result.hitNormalWorld.y;
+                hitBody = result.body;
+            }
+        }
+
+        // Update grounded state
+        const prevGrounded = this.isOnGround;
+        this.isOnGround = onValidGround;
+        
+        // Track when we were last grounded for coyote time calculation
+        if (this.isOnGround) {
+            this.lastGroundedTime = Game.lastTime / 1000 || performance.now() / 1000;
+        }
+        
+        // Coyote time: can jump for a short time after leaving ground
+        const timeSinceGrounded = (Game.lastTime / 1000 || performance.now() / 1000) - this.lastGroundedTime;
+        this.canJump = this.isOnGround || (timeSinceGrounded < this.coyoteTimeThreshold);
+        
+        // --- DEBUG LOGGING ---
+        if (performance.now() % 60 < 1) { // Log roughly every 60 frames
+             console.log(`checkGround: hasHit=${onValidGround}, hitNormalY=${hitNormalY?.toFixed(2)}, onValidGround=${onValidGround}`);
+             console.log(`Character position: (${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)})`);
+             console.log(`Grounded: ${this.isOnGround}, CanJump: ${this.canJump}, TimeSinceGrounded: ${timeSinceGrounded.toFixed(2)}`);
+             
+             if (hitBody) {
+                 console.log(`Hit body position: (${hitBody.position.x.toFixed(2)}, ${hitBody.position.y.toFixed(2)}, ${hitBody.position.z.toFixed(2)})`);
+                 console.log(`Hit distance: ${closestHitDistance.toFixed(2)}`);
+             }
+        }
+        // --- END DEBUG LOGGING ---
+        
+        // Always draw the debug ray
+        this.drawDebugRay(rays[0].from, rays[0].to, onValidGround ? 0x00ff00 : 0xff0000);
     },
 
     // Helper to visualize the raycast
@@ -259,69 +347,121 @@ const Character = {
         // Ensure Game and Game.scene are available
         if (!window.Game || !window.Game.scene) return;
 
+        // Create or update the debug line
         if (!this.debugLine) {
-            const material = new THREE.LineBasicMaterial({ color: color, depthTest: false, depthWrite: false }); // Disable depth test to see it always
-            const geometry = new THREE.BufferGeometry().setFromPoints([
-                new THREE.Vector3(), new THREE.Vector3()
-            ]);
+            const material = new THREE.LineBasicMaterial({ 
+                color: color, 
+                depthTest: false, 
+                depthWrite: false,
+                transparent: true,
+                opacity: 0.7
+            });
+            
+            // Create geometry for the line
+            const linePoints = [
+                new THREE.Vector3(start.x, start.y, start.z),
+                new THREE.Vector3(end.x, end.y, end.z)
+            ];
+            
+            const geometry = new THREE.BufferGeometry().setFromPoints(linePoints);
             this.debugLine = new THREE.Line(geometry, material);
             this.debugLine.renderOrder = 999; // Render on top
+            
+            // Add to scene directly, not to model
             Game.scene.add(this.debugLine);
+        } else {
+            // Update existing line position and color
+            this.debugLine.material.color.setHex(color);
+            
+            // Update the line geometry to match new ray positions
+            const positions = this.debugLine.geometry.attributes.position;
+            if (positions) {
+                positions.setXYZ(0, start.x, start.y, start.z);
+                positions.setXYZ(1, end.x, end.y, end.z);
+                positions.needsUpdate = true;
+            }
         }
-        this.debugLine.material.color.setHex(color);
-        this.debugLine.geometry.attributes.position.setXYZ(0, start.x, start.y, start.z);
-        this.debugLine.geometry.attributes.position.setXYZ(1, end.x, end.y, end.z);
-        this.debugLine.geometry.attributes.position.needsUpdate = true;
     },
 
 
     move: function(direction, deltaTime) {
         if (!this.body) return; // Safety check
 
-        this.isMoving = direction.lengthSq() > 0.01; // Use squared length for efficiency
+        // Check if we're trying to move
+        this.isMoving = direction.lengthSquared() > 0.01;
 
         if (!this.isMoving) {
-             // Apply damping manually when not moving for snappier stops on ground
-            if (this.isOnGround) {
-                // Gradually reduce velocity instead of instant stop for smoother feel
-                 const stopFactor = Math.pow(0.1, deltaTime * 10); // Adjust multiplier for faster/slower stop
-                 this.body.velocity.x *= stopFactor;
-                 this.body.velocity.z *= stopFactor;
-
-                 // Clamp velocity to zero if very small
-                 if (Math.abs(this.body.velocity.x) < 0.01) this.body.velocity.x = 0;
-                 if (Math.abs(this.body.velocity.z) < 0.01) this.body.velocity.z = 0;
-
-            }
-             // Keep existing linear damping for air control stops
+            // If not actively moving, apply damping to quickly stop horizontal movement
+            const stopFactor = this.isOnGround ? 0.01 : 0.1; // Stronger stop on ground
+            this.body.velocity.x *= stopFactor;
+            this.body.velocity.z *= stopFactor;
+            
+            // Snap to zero for very small velocities to prevent sliding
+            if (Math.abs(this.body.velocity.x) < 0.5) this.body.velocity.x = 0;
+            if (Math.abs(this.body.velocity.z) < 0.5) this.body.velocity.z = 0;
             return;
         }
 
-        // Apply force based movement - feels more physical
-        const currentVelocity = this.body.velocity;
-        const targetVelocity = direction.clone().scale(this.moveSpeed); // Use clone
-
-        // Calculate force needed to reach target velocity
-        // Use different acceleration based on ground state
-        const accel = this.isOnGround ? 200.0 : 50.0; // Higher accel on ground, lower in air
-        let force = new CANNON.Vec3(); // Create new Vec3 for force calculation
-        targetVelocity.vsub(currentVelocity, force); // Vector subtraction: target - current -> stored in 'force'
-        force.y = 0; // No vertical force from movement input
-
-        // Limit force magnitude to the acceleration value
-        const maxForceMagnitude = accel;
-        if (force.lengthSquared() > maxForceMagnitude * maxForceMagnitude) {
-            force.normalize();
-            force.scale(maxForceMagnitude, force); // Scale normalized force by accel magnitude
+        // Track time since we were last grounded to allow air control even when jumping/falling
+        const timeSinceGrounded = (Game.lastTime / 1000 || performance.now() / 1000) - this.lastGroundedTime;
+        const hasRecentGroundContact = timeSinceGrounded < 0.5; // More generous than jump coyote time
+        
+        // Scale movement speed based on ground state, but ensure some air control
+        const speedScale = this.isOnGround ? 1.0 : 
+                         hasRecentGroundContact ? 0.8 : 0.5;
+        const speed = this.moveSpeed * speedScale;
+        
+        // Direct velocity control
+        const targetVelocity = direction.clone().scale(speed);
+        
+        // Keep the current Y velocity - we don't want to interfere with gravity
+        targetVelocity.y = this.body.velocity.y;
+        
+        // Different control method based on ground state
+        if (this.isOnGround || hasRecentGroundContact) {
+            // Use direct velocity control with blending for smooth acceleration
+            const blendFactor = this.isOnGround ? 0.5 : 0.3;
+            this.body.velocity.x = this.body.velocity.x * (1 - blendFactor) + targetVelocity.x * blendFactor;
+            this.body.velocity.z = this.body.velocity.z * (1 - blendFactor) + targetVelocity.z * blendFactor;
+        } else {
+            // In air without recent ground contact, use force-based control for more physical feel
+            const airControlFactor = 20; // Air control multiplier
+            const force = new CANNON.Vec3();
+            
+            // Calculate needed force
+            force.x = (targetVelocity.x - this.body.velocity.x) * airControlFactor;
+            force.z = (targetVelocity.z - this.body.velocity.z) * airControlFactor;
+            force.y = 0; // No vertical force from movement input
+            
+            // Limit maximum air control force
+            const maxAirForce = 200;
+            const forceMagnitudeSq = force.x * force.x + force.z * force.z;
+            if (forceMagnitudeSq > maxAirForce * maxAirForce) {
+                const scalar = maxAirForce / Math.sqrt(forceMagnitudeSq);
+                force.x *= scalar;
+                force.z *= scalar;
+            }
+            
+            // Apply the force
+            this.body.applyForce(force, this.body.position);
         }
-
-        // Apply force (scaled by body mass implicitly by Cannon, force is in Newtons)
-        // ApplyForce expects force in Newtons (mass * acceleration)
-        this.body.applyForce(force.scale(this.body.mass), this.body.position);
-
-        // Update last direction for third-person model rotation
-        if (!this.isFirstPerson) {
-            this.lastDirection.copy(direction);
+        
+        // Apply a speed cap to prevent excessive velocity
+        const horizontalSpeed = Math.sqrt(
+            this.body.velocity.x * this.body.velocity.x + 
+            this.body.velocity.z * this.body.velocity.z
+        );
+        
+        if (horizontalSpeed > this.moveSpeed * 1.2) {
+            const scale = (this.moveSpeed * 1.2) / horizontalSpeed;
+            this.body.velocity.x *= scale;
+            this.body.velocity.z *= scale;
+        }
+        
+        // Debug logging
+        if (performance.now() % 120 < 1) {
+            console.log(`Moving: ${this.isMoving}, Grounded: ${this.isOnGround}, TimeSinceGrounded: ${timeSinceGrounded.toFixed(2)}`);
+            console.log(`Velocity: (${this.body.velocity.x.toFixed(2)}, ${this.body.velocity.y.toFixed(2)}, ${this.body.velocity.z.toFixed(2)})`);
         }
     },
 
@@ -329,17 +469,48 @@ const Character = {
     jump: function() {
          if (!this.body) return false; // Safety check
 
-        if (this.canJump && this.isOnGround) {
-            // Apply an instantaneous upward velocity change
-            this.body.velocity.y = this.jumpForce; // Directly set y velocity
-            this.canJump = false; // Prevent immediate re-jump
-            this.isOnGround = false; // We are now airborne
-            console.log("Jump executed! Velocity Y set to:", this.jumpForce);
-            // Reset leg positions slightly later via animation update
+        // Main condition: allow jump only when grounded
+        if (this.isOnGround) {
+            // Clear any existing vertical velocity/forces
+            this.body.velocity.y = 0;
+            this.body.force.set(this.body.force.x, 0, this.body.force.z);
+            
+            // Apply an instantaneous upward velocity change for consistent jump height
+            this.body.velocity.y = this.jumpForce; 
+            
+            // Apply a small impulse as well for more responsive jumping
+            this.body.applyImpulse(new CANNON.Vec3(0, this.jumpForce / 2, 0), this.body.position);
+            
+            // Update state
+            this.canJump = false; 
+            this.isOnGround = false;
+            
+            // Short cooldown to prevent immediate re-grounding
+            setTimeout(() => {
+                if (this.body && this.body.velocity.y > 0) {
+                    this.canJump = false;
+                }
+            }, 100);
+            
+            console.log("Jump executed with velocity:", this.jumpForce);
+            return true;
+        } 
+        // Secondary condition: allow "coyote time" jump if player just left ground
+        else if (this.canJump && this.body.velocity.y > -3.0 && this.body.velocity.y < 0) {
+            // Clear existing vertical velocity/forces
+            this.body.velocity.y = 0;
+            this.body.force.set(this.body.force.x, 0, this.body.force.z);
+            
+            // Apply jump
+            this.body.velocity.y = this.jumpForce;
+            this.body.applyImpulse(new CANNON.Vec3(0, this.jumpForce / 2, 0), this.body.position);
+            
+            this.canJump = false;
+            console.log("Coyote jump executed!");
             return true;
         }
-         else {
-            console.log("Jump failed - canJump:", this.canJump, "isOnGround:", this.isOnGround);
+        else {
+            console.log("Jump failed - isOnGround:", this.isOnGround, "yVelocity:", this.body.velocity.y.toFixed(2));
             return false;
         }
     },
@@ -574,8 +745,8 @@ const Character = {
     },
 
     updateVisibility: function() {
-        const visible = !this.isFirstPerson;
-        // Check if parts exist before setting visibility
+        // Always hide the main model parts in first-person
+        const visible = false; 
         if (this.parts.head) this.parts.head.visible = visible;
         if (this.parts.torso) this.parts.torso.visible = visible;
         if (this.parts.leftArmGroup) this.parts.leftArmGroup.visible = visible;
@@ -589,85 +760,53 @@ const Character = {
     update: function(deltaTime) {
         // Check necessary components exist
          if (!this.body || !this.model) {
-             // console.error("Character update called before body or model initialized!"); // Reduce log spam
              return;
          }
 
         // 1. Check ground status using raycast
         this.checkGround();
-
-        // 2. Sync model position with physics body AFTER physics step
-        this.model.position.copy(this.body.position);
-
-        // 3. Rotate model and physics body
-        if (this.isFirstPerson) {
-            // In FP, the physics body's rotation should match the camera's yaw
-            if (window.Game && Game.camera) { // Check Game context
-                const cameraQuaternion = Game.camera.quaternion;
-                // Create a quaternion representing only the yaw
-                const yawQuaternion = new CANNON.Quaternion();
-                // Get camera's forward vector, project to XZ plane, get angle
-                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraQuaternion);
-                const angleY = Math.atan2(forward.x, forward.z);
-
-                // Check if angleY is a valid number
-                if (!isNaN(angleY)) {
-                    yawQuaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), angleY);
-
-                    // Apply this yaw to the physics body
-                    if (this.body.quaternion) {
-                       this.body.quaternion.copy(yawQuaternion);
-                    } else {
-                         console.error("Character.update: this.body.quaternion is missing!");
-                    }
-
-                    // Update the visual model's rotation
-                    if (this.model.rotation) {
-                        this.model.rotation.y = angleY;
-                    } else {
-                         console.error("Character.update: this.model.rotation is missing!", this.model);
-                    }
-                } else {
-                     // console.warn("Character.update: Calculated angleY is NaN."); // Reduce spam
-                }
-            }
-        } else { // Third Person
-            if (this.lastDirection.lengthSq() > 0.01) {
-                const targetRotation = Math.atan2(this.lastDirection.x, this.lastDirection.z);
-                 // Check validity and existence
-                 if (!isNaN(targetRotation) && this.model && this.model.rotation) {
-                     let currentRotation = this.model.rotation.y;
-                     if (typeof currentRotation !== 'number') currentRotation = 0; // Ensure it's a number
-
-                     let delta = targetRotation - currentRotation;
-                     // Normalize angle difference for shortest path lerp
-                     while (delta <= -Math.PI) delta += Math.PI * 2;
-                     while (delta > Math.PI) delta -= Math.PI * 2;
-
-                     const lerpSpeed = 10; // Speed of rotation interpolation
-                     const newRotationY = currentRotation + delta * (deltaTime * lerpSpeed);
-                     this.model.rotation.y = newRotationY;
-
-                     // Also rotate the physics body in third person
-                     if (this.body && this.body.quaternion) {
-                        this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0,1,0), newRotationY);
-                     } else {
-                          console.error("Character.update (TP): this.body.quaternion is missing!");
-                     }
-                 } else {
-                      // console.warn("Character.update (TP): Invalid rotation calc or missing model/rotation."); // Reduce spam
-                 }
+        
+        // Track velocity for debugging and air control
+        const yVelocity = this.body.velocity.y;
+        
+        // 2. Apply a small downward force when on ground to help maintain contact
+        if (this.isOnGround) {
+            // Apply a gentle downward force to help maintain ground contact
+            const groundingForce = 15 * this.body.mass; // Force in Newtons
+            this.body.applyForce(new CANNON.Vec3(0, -groundingForce, 0), this.body.position);
+            
+            // Also reset vertical velocity if very small to prevent bouncing
+            if (Math.abs(yVelocity) < 0.2) {
+                this.body.velocity.y = 0;
             }
         }
 
+        // 3. Sync model position with physics body
+        this.model.position.copy(this.body.position);
 
-        // 4. Update animations (walking, punching)
+        // 4. Rotate model and physics body
+        if (window.Game && Game.camera) {
+            const cameraQuaternion = Game.camera.quaternion;
+            const yawQuaternion = new CANNON.Quaternion();
+            // Get camera's forward vector, project to XZ plane, get angle
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraQuaternion);
+            const angleY = Math.atan2(forward.x, forward.z);
+
+            // Check if angleY is a valid number
+            if (!isNaN(angleY)) {
+                yawQuaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), angleY);
+                this.body.quaternion.copy(yawQuaternion);
+                this.model.rotation.y = angleY;
+            }
+        }
+
+        // 5. Update animations (walking, punching)
         if (this.isPunching) {
             this.animatePunch(deltaTime);
         } else {
-            // Ensure walking animation only happens if needed (prevents unnecessary lerping)
+            // Only animate if needed
             if (this.isMoving || !this.isOnGround ||
-                this.parts.leftLegGroup.rotation.x !== 0 || // Check if not already in idle pose
+                this.parts.leftLegGroup.rotation.x !== 0 || 
                 this.parts.rightLegGroup.rotation.x !== 0 ||
                 this.parts.leftArmGroup.rotation.x !== 0 ||
                 this.parts.rightArmGroup.rotation.x !== 0)
@@ -676,16 +815,23 @@ const Character = {
             }
         }
 
-        // 5. Update FP arms (bobbing, etc.) - happens relative to camera
+        // 6. Update FP arms (bobbing, etc.)
         this.updateFirstPersonArms(deltaTime);
 
-
-        // 6. Update cooldowns
+        // 7. Update cooldowns
         if (this.punchCooldown > 0) {
             this.punchCooldown -= deltaTime;
-            if (this.punchCooldown < 0) this.punchCooldown = 0; // Prevent negative cooldown
+            if (this.punchCooldown < 0) this.punchCooldown = 0;
         }
-
-        // Note: isMoving flag is updated in move()
+        
+        // 8. Prevent excessive falling velocity (terminal velocity)
+        if (this.body.velocity.y < -20) {
+            this.body.velocity.y = -20;
+        }
+        
+        // 9. Debug logging (less frequent)
+        if (performance.now() % 300 < 1) {
+            console.log(`Position: (${this.body.position.x.toFixed(2)}, ${this.body.position.y.toFixed(2)}, ${this.body.position.z.toFixed(2)}), Y-Velocity: ${yVelocity.toFixed(2)}, Grounded: ${this.isOnGround}`);
+        }
     }
 }; // End of Character object definition
