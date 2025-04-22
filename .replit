@@ -1,6 +1,8 @@
-run = "npm start"
+run = "cd client && npm install && npm run build && cd .. && node server/index.js"
 hidden = [".config", "package-lock.json"]
 entrypoint = "index.js"
+
+# Show the client UI by default, Express serves server/public/index.html
 
 [nix]
 channel = "stable-22_11"

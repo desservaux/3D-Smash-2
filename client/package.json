@@ -1,0 +1,16 @@
+{
+  "name": "block-world-arena-client",
+  "version": "0.1.0",
+  "description": "Block World Arena - A 3D multiplayer voxel game",
+  "main": "src/js/app.js",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=../server/public/bundle.js --platform=browser --target=es6",
+    "watch": "esbuild src/index.ts --bundle --outfile=../server/public/bundle.js --platform=browser --target=es6 --watch"
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.18.17"
+  }
+}
