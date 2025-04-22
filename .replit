@@ -1,8 +1,6 @@
-run = "cd client && npm install && npm run build && cd .. && node server/index.js"
-hidden = [".config", "package-lock.json"]
-entrypoint = "index.js"
-
-# Show the client UI by default, Express serves server/public/index.html
+run = "node server/index.js" # Simplified run command
+hidden = [".config", "package-lock.json", "node_modules"] # Hide node_modules
+entrypoint = "server/index.js" # Correct entry point
 
 [nix]
 channel = "stable-22_11"
@@ -32,14 +30,10 @@ requiredFiles = [".replit", "replit.nix", "package.json", "package-lock.json"]
 language = "nodejs"
 
 [deployment]
-run = ["npm", "start"]
+run = ["node", "server/index.js"] # Correct deployment command
 deploymentTarget = "cloudrun"
 ignorePorts = false
 
 [[ports]]
 localPort = 3000
 externalPort = 80
-
-[[ports]]
-localPort = 8000
-externalPort = 8000

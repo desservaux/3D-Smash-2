@@ -8,19 +8,34 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 const PORT = process.env.PORT || 3000;
 
-// Serve static files from the 'public' directory
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve static files directly from the 'client' directory
+// This includes index.html, css/, js/, etc.
+app.use(express.static(path.join(__dirname, '..', 'client')));
 
 // WebSocket connection handler
 wss.on('connection', socket => {
-  console.log('🕸️  client connected');
-  socket.on('message', data => console.log('←', data));
-  socket.on('close', () => console.log('🕸️  client disconnected'));
+  console.log('🕸️ client connected');
+
+  // Send a message back to the client upon connection
+  socket.send('Welcome to Block World Arena POC!');
+
+  socket.on('message', data => {
+      // Node.js Buffer to string conversion
+      const messageString = data.toString('utf-8');
+      console.log('← message from client:', messageString);
+
+      // Example: Echo message back to the client
+      socket.send(`Server received: ${messageString}`);
+  });
+
+  socket.on('close', () => console.log('🕸️ client disconnected'));
+  socket.on('error', (error) => console.error('WebSocket Error:', error));
 });
 
-// Route for the root path
+// Route for the root path - serve the client's index.html
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  // Serve the index.html from the 'client/public' directory
+  res.sendFile(path.join(__dirname, '..', 'client', 'public', 'index.html'));
 });
 
 // Start the server

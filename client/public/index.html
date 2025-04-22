@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Block World Arena POC</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #game-container { width: 100vw; height: 100vh; }
+    </style>
+    <!-- Import Map for Three.js -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="game-container"></div>
+    <!-- Load the main script as a module -->
+    <script type="module" src="/js/main.js"></script>
+</body>
+</html>
